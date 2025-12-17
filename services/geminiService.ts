@@ -1,8 +1,5 @@
 import { GoogleGenAI, Schema, Type } from "@google/genai";
-import { GeneratedPost, StyleType, LengthType, CoverMode } from "../types";
-
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+import { GeneratedPost } from "../types";
 
 // Define the response schema for structured JSON output
 const postSchema: Schema = {
@@ -29,14 +26,18 @@ const postSchema: Schema = {
   required: ["title", "content", "tags"]
 };
 
+/**
+ * Helper to get a fresh AI instance
+ */
+const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+
 export const generatePostText = async (
   topic: string,
   style: string,
   length: string,
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
-  if (!apiKey) throw new Error("API Key is missing");
-
+  const ai = getAI();
   const prompt = `
     You are a professional Xiaohongshu (Red Note) content creator with 1M+ followers.
     Create a viral post based on the following inputs:
@@ -54,7 +55,7 @@ export const generatePostText = async (
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -74,8 +75,8 @@ export const generatePostText = async (
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
-  if (!apiKey) return [];
   if (!topic) return [];
+  const ai = getAI();
 
   const prompt = `
     Based on the topic "${topic}", suggest 5 viral, catchy, and related sub-topics for Xiaohongshu (Red Note).
@@ -86,7 +87,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -111,7 +112,7 @@ export const generatePostImage = async (
   style: string,
   refImageBase64?: string
 ): Promise<string> => {
-  if (!apiKey) throw new Error("API Key is missing");
+  const ai = getAI();
 
   const stylePrompts: Record<string, string> = {
     emotional: "warm lighting, cozy atmosphere, soft focus, film grain, aesthetic",
@@ -131,9 +132,7 @@ export const generatePostImage = async (
   try {
     let response;
 
-    // Use gemini-2.5-flash-image for both scenarios as it's versatile and fast
     if (refImageBase64) {
-      // Image editing/variation workflow
       const imagePart = {
         inlineData: {
           mimeType: 'image/png',
@@ -151,7 +150,6 @@ export const generatePostImage = async (
         }
       });
     } else {
-      // Text-to-image workflow
       response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
@@ -160,7 +158,6 @@ export const generatePostImage = async (
       });
     }
 
-    // Extract image
     for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) {
             return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
