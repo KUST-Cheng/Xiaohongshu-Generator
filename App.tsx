@@ -3,7 +3,7 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
-import { Key, AlertCircle, Image as ImageIcon, ShieldCheck } from 'lucide-react';
+import { Key, AlertCircle, Image as ImageIcon, ShieldCheck, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
@@ -22,8 +22,12 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
+  
+  // 错误状态管理
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
-  const [isKeyMissing, setIsKeyMissing] = useState(false);
+  const [isKeyError, setIsKeyError] = useState(false); // 密钥缺失或失效
+  const [keyErrorType, setKeyErrorType] = useState<'missing' | 'invalid'>('missing');
+
   const [imageExportStatus, setImageExportStatus] = useState<'copy' | 'download' | ''>('');
   const [copySuccess, setCopySuccess] = useState(false);
 
@@ -31,7 +35,7 @@ const App: React.FC = () => {
   const coverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    checkApiKey();
+    checkApiKeyStatus();
     const now = new Date();
     setMemoData(prev => ({
       ...prev,
@@ -45,19 +49,30 @@ const App: React.FC = () => {
     }));
   }, []);
 
-  const checkApiKey = async () => {
-    if (!process.env.API_KEY && window.aistudio) {
-      const hasKey = await window.aistudio.hasSelectedApiKey();
-      if (!hasKey) setIsKeyMissing(true);
+  const checkApiKeyStatus = async () => {
+    const envKey = process.env.API_KEY;
+    const hasEnvKey = envKey && envKey !== "undefined" && envKey.trim() !== "" && envKey !== "YOUR_API_KEY";
+    
+    if (!hasEnvKey && window.aistudio) {
+      const hasSelected = await window.aistudio.hasSelectedApiKey();
+      if (!hasSelected) {
+        setIsKeyError(true);
+        setKeyErrorType('missing');
+      }
     }
   };
 
   const handleSelectPersonalKey = async () => {
     if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setIsQuotaExceeded(false);
-      setIsKeyMissing(false);
-      setError('');
+      try {
+        await window.aistudio.openSelectKey();
+        // 假设选择后即成功（规避 race condition）
+        setIsKeyError(false);
+        setIsQuotaExceeded(false);
+        setError('');
+      } catch (e) {
+        console.error("Select key error:", e);
+      }
     }
   };
 
@@ -103,8 +118,9 @@ const App: React.FC = () => {
     setProgress(0);
     setError('');
     setIsQuotaExceeded(false);
+    setIsKeyError(false);
     
-    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 200);
+    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 300);
 
     try {
       // 1. 生成文案 (Gemini)
@@ -122,7 +138,7 @@ const App: React.FC = () => {
         }));
       } else if (coverMode !== 'template') {
         setImageLoading(true);
-        // 调用 Pollinations 免费生图
+        // 调用免费生图 (Pollinations)
         const img = await generatePostImage(topic, style, postData.image_prompt);
         setGeneratedImage(img);
       }
@@ -130,14 +146,18 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error(err);
+      console.error("Generate Error Flow:", err);
+      
       if (err.message === "API_KEY_MISSING") {
-        setIsKeyMissing(true);
+        setIsKeyError(true);
+        setKeyErrorType('missing');
+      } else if (err.message === "INVALID_API_KEY" || err.message === "API_KEY_NOT_FOUND") {
+        setIsKeyError(true);
+        setKeyErrorType('invalid');
       } else if (err.message === "QUOTA_EXCEEDED") {
         setIsQuotaExceeded(true);
-        setError("API 配额已耗尽，请稍后再试或更新 Key。");
       } else {
-        setError(err.message || '生成失败，请重试');
+        setError(err.message || '系统繁忙，请重试');
       }
       setLoading(false);
     } finally {
@@ -187,50 +207,64 @@ const App: React.FC = () => {
         onDownloadCover={() => handleExportImage('download')}
       />
 
-      {isKeyMissing && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/80 backdrop-blur-md p-4">
-          <div className="bg-white rounded-[32px] p-8 max-w-md w-full shadow-2xl animate-fadeIn border border-gray-100 text-center">
-            <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 mx-auto">
-              <ShieldCheck className="w-10 h-10 text-blue-500" />
+      {/* 密钥错误/缺失引导 */}
+      {isKeyError && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/90 backdrop-blur-md p-4">
+          <div className="bg-white rounded-[32px] p-8 max-w-md w-full shadow-2xl animate-fadeIn text-center border border-gray-100">
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-6 mx-auto ${keyErrorType === 'invalid' ? 'bg-orange-50' : 'bg-blue-50'}`}>
+              {keyErrorType === 'invalid' ? <RefreshCw className="w-10 h-10 text-orange-500" /> : <ShieldCheck className="w-10 h-10 text-blue-500" />}
             </div>
-            <h2 className="text-2xl font-bold mb-3">配置安全密钥</h2>
+            <h2 className="text-2xl font-bold mb-3">
+              {keyErrorType === 'invalid' ? 'API 密钥失效' : '需要连接密钥'}
+            </h2>
             <p className="text-gray-500 mb-8 leading-relaxed">
-              为了保障安全，文案生成需连接您的 Gemini API Key。图片生成已切换为<span className="text-green-600 font-bold">完全免费模式</span>，无需额外配置。
+              {keyErrorType === 'invalid' 
+                ? '您当前使用的 Gemini 密钥似乎已过期或配置错误。请点击下方按钮重新安全连接。' 
+                : '文案生成需要连接您的 Gemini API 密钥。图片生成已自动切换至免费引擎。'}
             </p>
             <button 
               onClick={handleSelectPersonalKey}
               className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl transition-all shadow-xl flex items-center justify-center gap-3 active:scale-95"
             >
               <Key size={20} />
-              连接文案 API Key
+              {keyErrorType === 'invalid' ? '重新连接密钥' : '安全连接密钥'}
+            </button>
+            <button 
+              onClick={() => setIsKeyError(false)}
+              className="mt-4 text-sm text-gray-400 font-medium hover:text-gray-600"
+            >
+              暂不生成
             </button>
           </div>
         </div>
       )}
 
+      {/* 配额不足/频率过快 */}
       {isQuotaExceeded && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-[24px] p-8 max-w-sm w-full shadow-2xl animate-fadeIn border border-gray-100 text-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-[24px] p-8 max-w-sm w-full shadow-2xl animate-fadeIn text-center">
             <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-bold mb-2">文案生成额度不足</h2>
+            <h2 className="text-xl font-bold mb-2">生成频率过快</h2>
             <p className="text-gray-500 mb-8 text-sm leading-relaxed">
-              Gemini 免费层级的请求频率有限。您可以稍后再试，或连接另一个有效的 API Key。
+              Gemini 免费版有请求频率限制（每分钟通常仅限 2-15 次）。请稍等 30 秒后重试，或尝试连接另一个 API Key。
             </p>
-            <button 
-              onClick={handleSelectPersonalKey}
-              className="w-full py-4 bg-red-500 text-white font-bold rounded-xl flex items-center justify-center gap-2"
-            >
-              <Key size={18} />
-              更新 API Key
-            </button>
-            <button 
-              onClick={() => setIsQuotaExceeded(false)}
-              className="w-full mt-3 py-3 text-gray-400 text-sm font-medium"
-            >
-              取消
-            </button>
+            <div className="space-y-3">
+              <button 
+                onClick={() => setIsQuotaExceeded(false)}
+                className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl"
+              >
+                我知道了
+              </button>
+              <button 
+                onClick={handleSelectPersonalKey}
+                className="w-full py-4 bg-red-50 text-red-600 font-bold rounded-xl flex items-center justify-center gap-2"
+              >
+                <Key size={18} />
+                更新 API Key
+              </button>
+            </div>
           </div>
         </div>
       )}

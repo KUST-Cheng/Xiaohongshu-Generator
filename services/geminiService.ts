@@ -1,11 +1,18 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
+/**
+ * 安全地获取 AI 实例
+ * 每次调用都会创建新实例，确保使用最新的 API Key 环境
+ */
 const getClient = () => {
   const apiKey = process.env.API_KEY;
-  if (!apiKey || apiKey === "undefined" || apiKey.trim() === "") {
+  
+  // 检查密钥是否存在且非占位符
+  if (!apiKey || apiKey === "undefined" || apiKey.trim() === "" || apiKey === "YOUR_API_KEY") {
     throw new Error("API_KEY_MISSING");
   }
+  
   return new GoogleGenAI({ apiKey });
 };
 
@@ -24,11 +31,15 @@ export const generatePostText = async (
       - 风格: ${style}
       - 长度: ${length}
 
-      要求：标题有冲击力，正文多用 Emoji，排版整洁。
+      要求：
+      1. 标题必须有冲击力（使用“震惊体”、“数字体”或“悬念体”）。
+      2. 正文分段清晰，大量使用 Emoji，语气亲切或犀利（取决于风格）。
+      3. 结尾包含相关的互动问题。
+      4. 生成 3-5 个热门标签。
       
       特别任务：
-      1. 请为这个话题生成一段简短的【英文生图描述词】(image_prompt)，描述一张高质量、美观、适合做封面的摄影图片，不要包含文字。
-      2. ${isTemplateMode ? '生成封面所需的主标题、副标题和正文预览。' : ''}
+      1. 为这个话题生成一段简短的【英文生图描述词】(image_prompt)，描述一张高质量、美观、适合做封面的摄影图片，不要包含任何文字，风格要符合“${style}”。
+      2. ${isTemplateMode ? '提取封面所需的信息：main_title (主标题), highlight_text (高亮金句), body_preview (简短正文预览)。' : 'cover_summary 设为 null。'}
     `;
 
     const response = await ai.models.generateContent({
@@ -42,7 +53,7 @@ export const generatePostText = async (
             title: { type: Type.STRING },
             content: { type: Type.STRING },
             tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-            image_prompt: { type: Type.STRING, description: "English prompt for AI image generation" },
+            image_prompt: { type: Type.STRING },
             cover_summary: {
               type: Type.OBJECT,
               properties: {
@@ -58,42 +69,56 @@ export const generatePostText = async (
       },
     });
 
-    return JSON.parse(response.text || "{}");
+    const text = response.text;
+    if (!text) throw new Error("EMPTY_RESPONSE");
+    
+    try {
+      return JSON.parse(text);
+    } catch (parseErr) {
+      console.error("JSON Parse Error:", text);
+      throw new Error("INVALID_JSON_RESPONSE");
+    }
   } catch (error: any) {
-    console.error("Text Gen Error:", error);
+    console.error("Text Gen Error Detailed:", error);
+    
+    // 处理特定 API 错误
+    const errorMessage = error.message || "";
+    if (errorMessage.includes("401") || errorMessage.includes("403") || errorMessage.includes("invalid")) {
+      throw new Error("INVALID_API_KEY");
+    }
+    if (errorMessage.includes("429") || errorMessage.includes("quota") || errorMessage.includes("RESOURCE_EXHAUSTED")) {
+      throw new Error("QUOTA_EXCEEDED");
+    }
+    if (errorMessage.includes("Requested entity was not found")) {
+      throw new Error("API_KEY_NOT_FOUND");
+    }
+    
     throw error;
   }
 };
 
 /**
  * 使用 Pollinations.ai 免费生图
- * 优点：完全免费、无需 API Key、基于 Flux/Stable Diffusion
+ * 核心：Gemini 负责写 Prompt，Pollinations 负责画图
  */
 export const generatePostImage = async (
   topic: string,
   style: string,
   aiImagePrompt?: string
 ): Promise<string> => {
-  // 如果 Gemini 生成了专门的生图提示词则优先使用，否则使用基础描述
   const basePrompt = aiImagePrompt || topic;
   const styleKeywords: Record<string, string> = {
-    emotional: "cinematic lighting, healing aesthetic, moody photography, high quality",
-    educational: "clean and minimalist, high quality photography, soft natural light",
-    promotion: "fashion editorial style, high saturation, vibrant, professional product photography",
-    rant: "authentic street style photography, sharp contrast, real life atmosphere"
+    emotional: "cinematic, healing, moody, high quality photography",
+    educational: "minimalist, clean, bright, professional workspace",
+    promotion: "luxurious, high-end product photography, vibrant, trendy",
+    rant: "urban, gritty, realistic, sharp contrast"
   };
 
-  const finalPrompt = encodeURIComponent(`${basePrompt}, ${styleKeywords[style] || "aesthetic photography"}, 4k, high resolution, no text`);
-  
-  // 随机种子增加多样性
+  const finalPrompt = encodeURIComponent(`${basePrompt}, ${styleKeywords[style] || "aesthetic photography"}, 4k, no text, masterpiece`);
   const seed = Math.floor(Math.random() * 1000000);
   
-  // 拼接 Pollinations API URL
-  // 这里的参数：width=1080, height=1440 (符合3:4比例), nologo=true, model=flux
-  const imageUrl = `https://image.pollinations.ai/prompt/${finalPrompt}?width=1080&height=1440&seed=${seed}&nologo=true&model=flux&enhance=true`;
-
-  // 验证图片是否可用（Pollinations 会直接返回图片流，我们只需验证 URL）
-  return imageUrl;
+  // 使用 Pollinations.ai 的图片 API，不需要 Key
+  return `https://image.pollinations.ai/prompt/${finalPrompt}?width=1080&height=1440&seed=${seed}&nologo=true&model=flux&enhance=true`;
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
@@ -102,7 +127,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
     const ai = getClient();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `针对话题“${topic}”，给出5个小红书爆款切入点，返回JSON字符串数组。`,
+      contents: `针对话题“${topic}”，给出5个小红书爆款笔记的标题切入点。以 JSON 字符串数组形式返回。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
