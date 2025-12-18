@@ -1,30 +1,16 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 极其安全地尝试获取 API Key
- * 兼容 Vite、Webpack 以及各种浏览器环境，防止 ReferenceError
+ * 每次请求动态创建实例，确保使用最新的 process.env.API_KEY
  */
-const getApiKey = (): string | null => {
-  try {
-    // 使用 globalThis 访问以防止 ReferenceError: process is not defined
-    const g = globalThis as any;
-    const key = g.process?.env?.API_KEY;
-    if (key && key !== "undefined" && key.trim() !== "" && key !== "YOUR_API_KEY") {
-      return key;
-    }
-  } catch (e) {
-    // 忽略任何环境检测错误
-  }
-  return null;
-};
-
 const getClient = () => {
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey || apiKey === "undefined" || apiKey === "YOUR_API_KEY") {
     throw new Error("API_KEY_MISSING");
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 export const generatePostText = async (
@@ -82,6 +68,10 @@ export const generatePostText = async (
   } catch (error: any) {
     console.error("Gemini Gen Error:", error);
     const msg = error.message || "";
+    // 如果提示实体未找到，说明密钥关联的项目有问题
+    if (msg.includes("Requested entity was not found")) {
+      throw new Error("KEY_NOT_FOUND_ON_PROJECT");
+    }
     if (msg.includes("401") || msg.includes("403")) throw new Error("INVALID_API_KEY");
     if (msg.includes("429")) throw new Error("QUOTA_EXCEEDED");
     throw error;

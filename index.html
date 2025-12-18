@@ -1,9 +1,14 @@
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RedNote Generator</title>
+    <script>
+      // 兼容性补丁：防止前端由于访问 process 而崩溃
+      window.process = window.process || { env: {} };
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Load Google Fonts for aesthetic Chinese typography -->
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=ZCOOL+KuaiLe&display=swap" rel="stylesheet">
