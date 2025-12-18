@@ -8,10 +8,8 @@ import { Key, AlertCircle, ShieldCheck, RefreshCw } from 'lucide-react';
 
 declare global {
   interface Window {
-    aistudio: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
+    // 修正：使用全局定义的 AIStudio 类型，并匹配预期的可选修饰符以解决编译错误
+    aistudio: AIStudio;
     html2canvas: any;
   }
 }
@@ -58,10 +56,11 @@ const App: React.FC = () => {
   }, []);
 
   const handleSelectPersonalKey = async () => {
+    // 遵循指南：使用 openSelectKey 打开对话框
     if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
       try {
         await window.aistudio.openSelectKey();
-        // 选择后假设成功，尝试清除错误状态
+        // 指南要求：触发后即假设成功，不再进行后续检查以防 Race Condition
         setIsKeyError(false);
         setKeyErrorType('missing');
         setIsQuotaExceeded(false);
@@ -76,16 +75,6 @@ const App: React.FC = () => {
     if (!topic) {
       setError('请输入笔记话题');
       return;
-    }
-
-    // 在生成前检查是否已连接密钥
-    if (window.aistudio) {
-      const hasKey = await window.aistudio.hasSelectedApiKey();
-      if (!hasKey && (!process.env.API_KEY || process.env.API_KEY === "undefined")) {
-        setIsKeyError(true);
-        setKeyErrorType('missing');
-        return;
-      }
     }
 
     setLoading(true);
@@ -109,6 +98,7 @@ const App: React.FC = () => {
         }));
       } else if (coverMode !== 'template') {
         setImageLoading(true);
+        // 调用 generatePostImage，内部已改为使用 Gemini 模型
         const img = await generatePostImage(topic, style, postData.image_prompt);
         setGeneratedImage(img);
       }
@@ -116,15 +106,20 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("App Generation Error:", err);
-      if (err.message === "API_KEY_MISSING") {
+      console.error("App Generation Error Trace:", err);
+      const msg = err.message || "";
+      
+      // 捕获 API 密钥相关的特定错误并引导用户选择密钥
+      if (msg === "API_KEY_MISSING") {
         setIsKeyError(true);
         setKeyErrorType('missing');
-      } else if (err.message === "KEY_NOT_FOUND_ON_PROJECT" || err.message === "INVALID_API_KEY") {
-        // 重置状态并要求重新选择
+      } else if (msg === "KEY_NOT_FOUND_ON_PROJECT" || msg.includes("Requested entity was not found")) {
         setIsKeyError(true);
         setKeyErrorType('invalid');
-      } else if (err.message === "QUOTA_EXCEEDED") {
+      } else if (msg === "INVALID_API_KEY") {
+        setIsKeyError(true);
+        setKeyErrorType('invalid');
+      } else if (msg === "QUOTA_EXCEEDED") {
         setIsQuotaExceeded(true);
       } else {
         setError('生成遇到异常，请检查网络或重新连接密钥');
@@ -199,10 +194,10 @@ const App: React.FC = () => {
             <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-6 mx-auto ${keyErrorType === 'invalid' ? 'bg-orange-50' : 'bg-blue-50'}`}>
               {keyErrorType === 'invalid' ? <RefreshCw className="w-10 h-10 text-orange-500" /> : <ShieldCheck className="w-10 h-10 text-blue-500" />}
             </div>
-            <h2 className="text-2xl font-bold mb-3">{keyErrorType === 'invalid' ? '密钥需要更新' : '连接 AI 文案引擎'}</h2>
+            <h2 className="text-2xl font-bold mb-3">{keyErrorType === 'invalid' ? '密钥验证失败' : '连接 AI 文案引擎'}</h2>
             <p className="text-gray-500 mb-8 text-sm leading-relaxed">
               {keyErrorType === 'invalid' 
-                ? '检测到您的 API 密钥已失效或未开启相关权限。请重新选择一个有效的 API 密钥项目。'
+                ? '您选择的 API 密钥无效或未启用。请点击下方按钮，并确保选择一个已开启付费结算的有效项目密钥。'
                 : '爆款文案生成需要连接 Gemini API 密钥。点击下方按钮即可快速完成授权。'}
             </p>
             <button 
@@ -227,8 +222,8 @@ const App: React.FC = () => {
             <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-bold mb-2">生成频率太快</h2>
-            <p className="text-gray-500 mb-8 text-sm">Gemini 免费额度已达上限。请等待 60 秒后再尝试，或在连接弹窗中更换另一个 API 密钥。</p>
+            <h2 className="text-xl font-bold mb-2">生成频率限制</h2>
+            <p className="text-gray-500 mb-8 text-sm">当前密钥的免费额度已达上限。请等待 60 秒后再尝试，或尝试连接另一个有效的 API 密钥。</p>
             <button onClick={() => setIsQuotaExceeded(false)} className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl">确定</button>
           </div>
         </div>

@@ -3,13 +3,15 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 每次请求动态创建实例，确保使用最新的 process.env.API_KEY
+ * 每次请求时动态创建实例，确保使用最新的 process.env.API_KEY。
+ * 如果 API KEY 尚未注入，将抛出特定错误以触发 App.tsx 中的密钥选择 UI。
  */
 const getClient = () => {
   const apiKey = process.env.API_KEY;
-  if (!apiKey || apiKey === "undefined" || apiKey === "YOUR_API_KEY") {
+  if (!apiKey || apiKey === "undefined" || apiKey === "YOUR_API_KEY" || apiKey.trim() === "") {
     throw new Error("API_KEY_MISSING");
   }
+  // 必须直接使用 process.env.API_KEY 进行初始化
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
@@ -68,7 +70,7 @@ export const generatePostText = async (
   } catch (error: any) {
     console.error("Gemini Gen Error:", error);
     const msg = error.message || "";
-    // 如果提示实体未找到，说明密钥关联的项目有问题
+    // 捕获“请求的项目未找到”错误，这通常意味着密钥失效或项目配置有误
     if (msg.includes("Requested entity was not found")) {
       throw new Error("KEY_NOT_FOUND_ON_PROJECT");
     }
@@ -90,9 +92,40 @@ export const generatePostImage = async (
     promotion: "luxurious aesthetic product display",
     rant: "authentic urban realism"
   };
-  const finalPrompt = encodeURIComponent(`${basePrompt}, ${styleKeywords[style] || "high quality photography"}, 4k, no text`);
-  const seed = Math.floor(Math.random() * 1000000);
-  return `https://image.pollinations.ai/prompt/${finalPrompt}?width=1080&height=1440&seed=${seed}&nologo=true&model=flux&enhance=true`;
+  
+  const finalPrompt = `${basePrompt}, ${styleKeywords[style] || "high quality photography"}, 4k, no text`;
+  
+  const ai = getClient();
+  // 遵循指南：默认使用 gemini-2.5-flash-image 进行生图
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: {
+      parts: [
+        {
+          text: finalPrompt,
+        },
+      ],
+    },
+    config: {
+      imageConfig: {
+        aspectRatio: "3:4"
+      }
+    }
+  });
+
+  // 遵循指南：迭代所有部分以查找图像部分，不假设第一个部分是图像
+  if (response.candidates?.[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData) {
+        const base64EncodeString: string = part.inlineData.data;
+        return `data:image/png;base64,${base64EncodeString}`;
+      } else if (part.text) {
+        console.log("Model feedback during image gen:", part.text);
+      }
+    }
+  }
+  
+  throw new Error("IMAGE_GENERATION_FAILED");
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
@@ -107,6 +140,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
       }
     });
+    // 使用 response.text 属性直接提取生成的文本
     return JSON.parse(response.text || "[]");
   } catch (e) {
     return [];
