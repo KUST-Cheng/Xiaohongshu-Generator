@@ -3,11 +3,9 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
-import { Sparkles, Key, ExternalLink, ShieldCheck } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [hasKey, setHasKey] = useState<boolean>(true);
-  const [showKeyDialog, setShowKeyDialog] = useState<boolean>(false);
+  // 核心状态
   const [topic, setTopic] = useState('');
   const [style, setStyle] = useState<StyleType>('emotional');
   const [length, setLength] = useState<LengthType>('medium');
@@ -29,35 +27,19 @@ const App: React.FC = () => {
   const coverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const checkKey = async () => {
-      if (window.aistudio) {
-        const selected = await window.aistudio.hasSelectedApiKey();
-        setHasKey(selected);
-        if (!selected) setShowKeyDialog(true);
-      }
-    };
-    checkKey();
-
+    // 初始化默认封面数据
     const now = new Date();
     setMemoData(prev => ({
       ...prev,
       date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      location: '灵感空间',
-      title: '点击生成\n爆款笔记封面',
-      highlight: 'AI 自动提取金句',
-      body: '正文预览内容...',
-      footer: '生活感悟 | 职场思考'
+      location: '创作灵感空间',
+      title: '在这里生成你的\n第一篇爆款笔记',
+      highlight: 'AI 赋能，灵感爆发',
+      body: '好的内容需要好的排版。',
+      footer: 'Xiaohongshu Generator'
     }));
   }, []);
-
-  const handleOpenKeySelector = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setHasKey(true);
-      setShowKeyDialog(false);
-    }
-  };
 
   const handleGenerate = async () => {
     if (!topic) {
@@ -69,13 +51,16 @@ const App: React.FC = () => {
     setProgress(0);
     setError('');
     
-    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 200);
+    // 进度条模拟
+    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + Math.random() * 8), 400);
 
     try {
+      // 1. 生成文案
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(50);
 
+      // 2. 处理封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -90,55 +75,19 @@ const App: React.FC = () => {
       }
       
       setProgress(100);
+      setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
+      console.error(err);
       setError(err.message);
-      if (err.message.includes("AUTH") || err.message.includes("Key")) {
-        setHasKey(false);
-        setShowKeyDialog(true);
-      }
+      setLoading(false);
     } finally {
       clearInterval(progInt);
-      setLoading(false);
       setImageLoading(false);
     }
   };
 
   return (
     <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans">
-      {/* 免费体验引导弹窗 */}
-      {showKeyDialog && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-md p-4">
-          <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl animate-fadeIn text-center border border-gray-100">
-            <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
-              <Sparkles className="w-10 h-10 text-red-500" />
-            </div>
-            <h2 className="text-2xl font-bold mb-3">开启免费创作体验</h2>
-            <p className="text-gray-500 mb-8 leading-relaxed text-sm">
-              为了让每个人都能免费生成爆款文案和图片，请先连接您的 API Key。
-            </p>
-            
-            <div className="bg-green-50 border border-green-100 rounded-2xl p-4 mb-8 flex items-start gap-3 text-left">
-              <ShieldCheck className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
-              <p className="text-xs text-green-700 leading-normal">
-                <b>完全免费</b>：本应用已优化，支持普通 API Key 的免费配额，无需开启付费结算即可使用全部功能。
-              </p>
-            </div>
-
-            <button 
-              onClick={handleOpenKeySelector}
-              className="w-full py-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-2xl transition-all shadow-lg flex items-center justify-center gap-2 active:scale-95 mb-4"
-            >
-              <Key size={20} />
-              立即连接 API Key
-            </button>
-            
-            <a href="https://ai.google.dev/gemini-api/docs/api-key" target="_blank" className="text-xs text-gray-400 hover:text-red-500 flex items-center justify-center gap-1">
-              如何获取免费 Key? <ExternalLink size={10} />
-            </a>
-          </div>
-        </div>
-      )}
-
       <ControlPanel 
         topic={topic} setTopic={setTopic}
         style={style} setStyle={setStyle}

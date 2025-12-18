@@ -2,14 +2,19 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 内部助手：获取配置好的 AI 实例
- * 确保在调用前 API_KEY 已通过 process.env 注入
+ * 获取 AI 实例
+ * 优先级：
+ * 1. 环境变量 process.env.API_KEY (生产部署最佳实践)
+ * 2. 硬编码回退 (确保用户部署后即开即用)
  */
 const getClient = () => {
-  const apiKey = process.env.API_KEY;
+  // 使用您提供的免费 Key 作为默认值
+  const apiKey = process.env.API_KEY || "AIzaSyA6KBntpKfjGV9t0kkNEqKYDVUB4oPj4lE";
+  
   if (!apiKey || apiKey === "undefined" || apiKey.trim() === "") {
-    throw new Error("AUTH_REQUIRED");
+    throw new Error("API_KEY_NOT_FOUND: 请确保已集成有效的 API Key。");
   }
+  
   return new GoogleGenAI({ apiKey });
 };
 
@@ -28,8 +33,8 @@ export const generatePostText = async (
       - 风格: ${style}
       - 长度: ${length}
 
-      要求：标题有冲击力，正文多用 Emoji，排版整洁。
-      ${isTemplateMode ? '同时生成封面所需的主标题、副标题和正文预览。' : ''}
+      要求：标题有冲击力（含关键词如“建议收藏”），正文多用 Emoji，排版有呼吸感，结尾有互动。
+      ${isTemplateMode ? '请同时为 iOS 备忘录风格的封面生成主标题、高亮金句和内容摘要。' : ''}
     `;
 
     const response = await ai.models.generateContent({
@@ -60,9 +65,7 @@ export const generatePostText = async (
 
     return JSON.parse(response.text || "{}");
   } catch (error: any) {
-    if (error.message === "AUTH_REQUIRED") {
-      throw new Error("请先点击『开始免费使用』以配置访问权限");
-    }
+    console.error("Text Gen Error:", error);
     throw error;
   }
 };
@@ -73,7 +76,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
     const ai = getClient();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `针对话题“${topic}”，给出5个小红书爆款切入点，返回JSON字符串数组。`,
+      contents: `根据话题“${topic}”，推荐5个适合小红书的爆款切入点。返回JSON字符串数组。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
@@ -85,10 +88,6 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
   }
 };
 
-/**
- * 核心生图函数：使用 gemini-2.5-flash-image
- * 该模型支持免费配额，生图速度快，效果好
- */
 export const generatePostImage = async (
   topic: string,
   style: string,
@@ -96,23 +95,22 @@ export const generatePostImage = async (
 ): Promise<string> => {
   try {
     const ai = getClient();
+    // 使用支持免费层级的 gemini-2.5-flash-image 模型
     const model = "gemini-2.5-flash-image";
     
     const styleMap: Record<string, string> = {
-      emotional: "电影感，柔和光影，治愈系",
-      educational: "清爽干净，高质感，极简",
-      promotion: "时尚大片，高饱和度，吸睛",
-      rant: "真实感，强烈对比，纪实风格"
+      emotional: "电影质感，治愈系氛围，高级色彩",
+      educational: "简约清爽，明亮高质感，职场风",
+      promotion: "时尚封面，高饱和度，吸睛大片",
+      rant: "真实抓拍感，冷调对比，有冲击力"
     };
-
-    const promptText = `一张精美的小红书封面图。主题：${topic}。风格：${styleMap[style] || "aesthetic"}。3:4 比例，专业摄影，无文字。`;
 
     const parts: any[] = [];
     if (refImageBase64) {
       parts.push({ inlineData: { mimeType: 'image/png', data: refImageBase64 } });
-      parts.push({ text: `参考这张图的构图，为话题“${topic}”生成一张全新的小红书风格封面。` });
+      parts.push({ text: `参考该图构图，为话题“${topic}”生成一张爆款小红书封面，视觉风格：${styleMap[style] || "aesthetic"}。` });
     } else {
-      parts.push({ text: promptText });
+      parts.push({ text: `一张精美的小红书封面大片。主题：${topic}。视觉风格：${styleMap[style] || "vibrant and professional"}。3:4 比例，专业摄影，无水印文字。` });
     }
 
     const response = await ai.models.generateContent({
@@ -125,11 +123,9 @@ export const generatePostImage = async (
     if (imageData) {
       return `data:${imageData.mimeType};base64,${imageData.data}`;
     }
-    throw new Error("模型未返回有效图像");
+    throw new Error("生图模型未返回结果，请检查 API 额度。");
   } catch (error: any) {
-    if (error.message === "AUTH_REQUIRED") {
-      throw new Error("生图功能需要配置 API Key 权限");
-    }
+    console.error("Image Gen Error:", error);
     throw error;
   }
 };
