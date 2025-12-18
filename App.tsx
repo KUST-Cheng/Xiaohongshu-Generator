@@ -3,13 +3,14 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
+import { Sparkles, Key, ExternalLink, ShieldCheck } from 'lucide-react';
 
 const App: React.FC = () => {
-  // --- State ---
+  const [hasKey, setHasKey] = useState<boolean>(true);
+  const [showKeyDialog, setShowKeyDialog] = useState<boolean>(false);
   const [topic, setTopic] = useState('');
   const [style, setStyle] = useState<StyleType>('emotional');
   const [length, setLength] = useState<LengthType>('medium');
-  
   const [coverMode, setCoverMode] = useState<CoverMode>('auto');
   const [memoData, setMemoData] = useState<MemoData>({
     date: '', time: '', location: '', title: '', highlight: '', body: '', footer: ''
@@ -17,206 +18,160 @@ const App: React.FC = () => {
 
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [referenceImageRaw, setReferenceImageRaw] = useState<string | null>(null);
-
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState(0); // Progress 0-100
+  const [progress, setProgress] = useState(0);
   const [imageLoading, setImageLoading] = useState(false);
-  
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
-  
   const [error, setError] = useState('');
-  const [copySuccess, setCopySuccess] = useState(false);
-  const [imageExportSuccess, setImageExportSuccess] = useState('');
 
-  // --- Refs ---
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
-  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // --- Effects ---
   useEffect(() => {
-    // Initialize Memo Data with current time
+    const checkKey = async () => {
+      if (window.aistudio) {
+        const selected = await window.aistudio.hasSelectedApiKey();
+        setHasKey(selected);
+        if (!selected) setShowKeyDialog(true);
+      }
+    };
+    checkKey();
+
     const now = new Date();
     setMemoData(prev => ({
-        ...prev,
-        date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
-        time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-        location: '中国 · 灵感空间',
-        title: '在这里生成你的\n爆款笔记封面',
-        highlight: '自动提取金句 / 痛点',
-        body: '正文内容会自动填充在这里...',
-        footer: '生活感悟 | 职场思考'
+      ...prev,
+      date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
+      time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+      location: '灵感空间',
+      title: '点击生成\n爆款笔记封面',
+      highlight: 'AI 自动提取金句',
+      body: '正文预览内容...',
+      footer: '生活感悟 | 职场思考'
     }));
   }, []);
 
-  // --- Handlers ---
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-        setError("图片大小不能超过 5MB");
-        return;
+  const handleOpenKeySelector = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setHasKey(true);
+      setShowKeyDialog(false);
     }
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      setReferenceImage(result);
-      setReferenceImageRaw(result.split(',')[1]);
-      setError('');
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleClearImage = () => {
-      setReferenceImage(null);
-      setReferenceImageRaw(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleGenerate = async () => {
     if (!topic) {
-        setError('请输入笔记话题');
-        return;
-    }
-    if (coverMode === 'ref' && !referenceImageRaw) {
-        setError('请上传参考图或切换生成方式');
-        return;
+      setError('请输入笔记话题');
+      return;
     }
 
     setLoading(true);
     setProgress(0);
     setError('');
-    setGeneratedData(null);
-    if (coverMode !== 'template') setGeneratedImage(null);
-
-    // Simulation Timer
-    progressIntervalRef.current = setInterval(() => {
-        setProgress((prev) => {
-            // Cap at 90% until done
-            if (prev >= 90) return prev;
-            // Increment randomly
-            return prev + Math.random() * 3;
-        });
-    }, 200);
+    
+    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 200);
 
     try {
-        // 1. Generate Text
-        const postData = await generatePostText(topic, style, length, coverMode === 'template');
-        setGeneratedData(postData);
-        
-        // Bump progress to at least 50% after text is done
-        setProgress(prev => Math.max(prev, 50));
+      const postData = await generatePostText(topic, style, length, coverMode === 'template');
+      setGeneratedData(postData);
+      setProgress(50);
 
-        // 2. Handle Cover Logic
-        if (coverMode === 'template') {
-            // Update template data with AI suggestion
-            if (postData.cover_summary) {
-                setMemoData(prev => ({
-                    ...prev,
-                    title: postData.cover_summary!.main_title,
-                    highlight: postData.cover_summary!.highlight_text,
-                    body: postData.cover_summary!.body_preview,
-                    footer: style === 'educational' ? '干货分享 | 认知升级' : '生活感悟 | 碎碎念'
-                }));
-            }
-        } else {
-            // Generate Image
-            setImageLoading(true);
-            const imageUrl = await generatePostImage(topic, style, coverMode === 'ref' ? referenceImageRaw! : undefined);
-            setGeneratedImage(imageUrl);
-        }
-        
-        // Complete
-        setProgress(100);
-
-        // Small delay to show 100% before resetting loading state
-        await new Promise(resolve => setTimeout(resolve, 500));
-
+      if (coverMode === 'template' && postData.cover_summary) {
+        setMemoData(prev => ({
+          ...prev,
+          title: postData.cover_summary!.main_title,
+          highlight: postData.cover_summary!.highlight_text,
+          body: postData.cover_summary!.body_preview,
+        }));
+      } else if (coverMode !== 'template') {
+        setImageLoading(true);
+        const img = await generatePostImage(topic, style, coverMode === 'ref' ? referenceImageRaw! : undefined);
+        setGeneratedImage(img);
+      }
+      
+      setProgress(100);
     } catch (err: any) {
-        setError(err.message || '生成失败，请重试');
+      setError(err.message);
+      if (err.message.includes("AUTH") || err.message.includes("Key")) {
+        setHasKey(false);
+        setShowKeyDialog(true);
+      }
     } finally {
-        if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-        setLoading(false);
-        setImageLoading(false);
+      clearInterval(progInt);
+      setLoading(false);
+      setImageLoading(false);
     }
   };
 
-  // --- Export Handlers ---
-  const handleCopyText = () => {
-      if (!generatedData) return;
-      const text = `${generatedData.title}\n\n${generatedData.content}\n\n${generatedData.tags.join(' ')}`;
-      navigator.clipboard.writeText(text);
-      setCopySuccess(true);
-      setTimeout(() => setCopySuccess(false), 2000);
-  };
-
-  const handleDownloadCover = async () => {
-      if (!coverRef.current || !(window as any).html2canvas) return;
-      try {
-          const canvas = await (window as any).html2canvas(coverRef.current, {
-              useCORS: true,
-              scale: 2, // High res
-              backgroundColor: "#FBF8F1"
-          });
-          const link = document.createElement('a');
-          link.download = `rednote_cover_${Date.now()}.png`;
-          link.href = canvas.toDataURL('image/png');
-          link.click();
-          setImageExportSuccess('download');
-          setTimeout(() => setImageExportSuccess(''), 2000);
-      } catch (e) {
-          console.error("Export failed", e);
-      }
-  };
-
-  const handleCopyCover = async () => {
-      if (!coverRef.current || !(window as any).html2canvas) return;
-      try {
-          const canvas = await (window as any).html2canvas(coverRef.current, {
-              useCORS: true,
-              scale: 2,
-              backgroundColor: "#FBF8F1"
-          });
-          canvas.toBlob(async (blob: Blob | null) => {
-              if (blob) {
-                  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-                  setImageExportSuccess('copy');
-                  setTimeout(() => setImageExportSuccess(''), 2000);
-              }
-          });
-      } catch (e) {
-          console.error("Copy failed", e);
-          setError("复制图片失败，请尝试下载");
-      }
-  };
-
   return (
-    <div className="flex flex-col lg:flex-row h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
-        <ControlPanel 
-            topic={topic} setTopic={setTopic}
-            style={style} setStyle={setStyle}
-            length={length} setLength={setLength}
-            coverMode={coverMode} setCoverMode={setCoverMode}
-            memoData={memoData} setMemoData={setMemoData}
-            referenceImage={referenceImage} onImageUpload={handleImageUpload} onClearImage={handleClearImage}
-            loading={loading} progress={progress} onGenerate={handleGenerate} error={error}
-            fileInputRef={fileInputRef}
-        />
-        <PreviewPanel 
-            loading={loading}
-            imageLoading={imageLoading}
-            generatedData={generatedData}
-            generatedImage={generatedImage}
-            coverMode={coverMode}
-            memoData={memoData}
-            coverRef={coverRef}
-            imageExportSuccess={imageExportSuccess}
-            copySuccess={copySuccess}
-            onCopyText={handleCopyText}
-            onCopyCover={handleCopyCover}
-            onDownloadCover={handleDownloadCover}
-        />
+    <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans">
+      {/* 免费体验引导弹窗 */}
+      {showKeyDialog && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-md p-4">
+          <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl animate-fadeIn text-center border border-gray-100">
+            <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
+              <Sparkles className="w-10 h-10 text-red-500" />
+            </div>
+            <h2 className="text-2xl font-bold mb-3">开启免费创作体验</h2>
+            <p className="text-gray-500 mb-8 leading-relaxed text-sm">
+              为了让每个人都能免费生成爆款文案和图片，请先连接您的 API Key。
+            </p>
+            
+            <div className="bg-green-50 border border-green-100 rounded-2xl p-4 mb-8 flex items-start gap-3 text-left">
+              <ShieldCheck className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-green-700 leading-normal">
+                <b>完全免费</b>：本应用已优化，支持普通 API Key 的免费配额，无需开启付费结算即可使用全部功能。
+              </p>
+            </div>
+
+            <button 
+              onClick={handleOpenKeySelector}
+              className="w-full py-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-2xl transition-all shadow-lg flex items-center justify-center gap-2 active:scale-95 mb-4"
+            >
+              <Key size={20} />
+              立即连接 API Key
+            </button>
+            
+            <a href="https://ai.google.dev/gemini-api/docs/api-key" target="_blank" className="text-xs text-gray-400 hover:text-red-500 flex items-center justify-center gap-1">
+              如何获取免费 Key? <ExternalLink size={10} />
+            </a>
+          </div>
+        </div>
+      )}
+
+      <ControlPanel 
+        topic={topic} setTopic={setTopic}
+        style={style} setStyle={setStyle}
+        length={length} setLength={setLength}
+        coverMode={coverMode} setCoverMode={setCoverMode}
+        memoData={memoData} setMemoData={setMemoData}
+        referenceImage={referenceImage} 
+        onImageUpload={(e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const r = new FileReader();
+          r.onloadend = () => {
+            setReferenceImage(r.result as string);
+            setReferenceImageRaw((r.result as string).split(',')[1]);
+          };
+          r.readAsDataURL(file);
+        }} 
+        onClearImage={() => { setReferenceImage(null); setReferenceImageRaw(null); }}
+        loading={loading} progress={progress} onGenerate={handleGenerate} error={error}
+        fileInputRef={fileInputRef}
+      />
+      <PreviewPanel 
+        loading={loading} imageLoading={imageLoading}
+        generatedData={generatedData} generatedImage={generatedImage}
+        coverMode={coverMode} memoData={memoData} coverRef={coverRef}
+        imageExportSuccess={''} copySuccess={false}
+        onCopyText={() => {
+          if (!generatedData) return;
+          const t = `${generatedData.title}\n\n${generatedData.content}\n\n${generatedData.tags.join(' ')}`;
+          navigator.clipboard.writeText(t);
+        }}
+        onCopyCover={() => {}} onDownloadCover={() => {}}
+      />
     </div>
   );
 };

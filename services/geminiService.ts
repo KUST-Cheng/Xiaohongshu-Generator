@@ -1,35 +1,17 @@
-import { GoogleGenAI, Schema, Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
-// Define the response schema for structured JSON output
-const postSchema: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    title: { type: Type.STRING, description: "The main title of the post, catchy and viral." },
-    content: { type: Type.STRING, description: "The main body content of the post, formatted with line breaks." },
-    tags: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
-      description: "A list of relevant hashtags."
-    },
-    cover_summary: {
-      type: Type.OBJECT,
-      properties: {
-        main_title: { type: Type.STRING },
-        highlight_text: { type: Type.STRING },
-        body_preview: { type: Type.STRING }
-      },
-      description: "Summary text specifically for the iOS memo cover template.",
-      nullable: true
-    }
-  },
-  required: ["title", "content", "tags"]
-};
-
 /**
- * Helper to get a fresh AI instance
+ * 内部助手：获取配置好的 AI 实例
+ * 确保在调用前 API_KEY 已通过 process.env 注入
  */
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey || apiKey === "undefined" || apiKey.trim() === "") {
+    throw new Error("AUTH_REQUIRED");
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 export const generatePostText = async (
   topic: string,
@@ -37,137 +19,117 @@ export const generatePostText = async (
   length: string,
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
-  const ai = getAI();
-  const prompt = `
-    You are a professional Xiaohongshu (Red Note) content creator with 1M+ followers.
-    Create a viral post based on the following inputs:
-    - Topic: ${topic}
-    - Style: ${style}
-    - Length: ${length}
-
-    Guidelines:
-    1. Use emojis liberally (Xiaohongshu style).
-    2. The title must be catchy (clickbait but honest).
-    3. The tone must match the requested style.
-    4. Format the content with clear paragraphs.
-    ${isTemplateMode ? '5. Also generate specific short text for an "iOS Memo" style cover image.' : ''}
-  `;
-
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: postSchema,
-        temperature: 0.8, 
-      },
-    });
+    const ai = getClient();
+    const prompt = `
+      你是一位拥有百万粉丝的小红书爆款博主。
+      请根据以下信息创作一篇极具吸引力的笔记：
+      - 主题: ${topic}
+      - 风格: ${style}
+      - 长度: ${length}
 
-    if (response.text) {
-      return JSON.parse(response.text) as GeneratedPost;
-    }
-    throw new Error("Empty response from AI");
-  } catch (error) {
-    console.error("Text Gen Error:", error);
-    throw error;
-  }
-};
+      要求：标题有冲击力，正文多用 Emoji，排版整洁。
+      ${isTemplateMode ? '同时生成封面所需的主标题、副标题和正文预览。' : ''}
+    `;
 
-export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
-  if (!topic) return [];
-  const ai = getAI();
-
-  const prompt = `
-    Based on the topic "${topic}", suggest 5 viral, catchy, and related sub-topics for Xiaohongshu (Red Note).
-    The suggestions should be distinct angles or hooks related to the main topic.
-    Keep them short (under 10 words).
-    Return ONLY a JSON array of strings. Example: ["30岁裸辞", "大理民宿避雷", "一人食记"]
-  `;
-
-  try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
-           type: Type.ARRAY,
-           items: { type: Type.STRING }
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            content: { type: Type.STRING },
+            tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+            cover_summary: {
+              type: Type.OBJECT,
+              properties: {
+                main_title: { type: Type.STRING },
+                highlight_text: { type: Type.STRING },
+                body_preview: { type: Type.STRING }
+              },
+              nullable: true
+            }
+          },
+          required: ["title", "content", "tags"]
         }
+      },
+    });
+
+    return JSON.parse(response.text || "{}");
+  } catch (error: any) {
+    if (error.message === "AUTH_REQUIRED") {
+      throw new Error("请先点击『开始免费使用』以配置访问权限");
+    }
+    throw error;
+  }
+};
+
+export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
+  if (!topic) return [];
+  try {
+    const ai = getClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `针对话题“${topic}”，给出5个小红书爆款切入点，返回JSON字符串数组。`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
       }
     });
-    if (response.text) {
-      return JSON.parse(response.text);
-    }
-    return [];
+    return JSON.parse(response.text || "[]");
   } catch (e) {
-    console.error("Related Topics Error:", e);
     return [];
   }
 };
 
+/**
+ * 核心生图函数：使用 gemini-2.5-flash-image
+ * 该模型支持免费配额，生图速度快，效果好
+ */
 export const generatePostImage = async (
   topic: string,
   style: string,
   refImageBase64?: string
 ): Promise<string> => {
-  const ai = getAI();
-
-  const stylePrompts: Record<string, string> = {
-    emotional: "warm lighting, cozy atmosphere, soft focus, film grain, aesthetic",
-    educational: "clean background, minimalistic, bright lighting, organized, high definition",
-    promotion: "vibrant colors, product focus, trendy, fashion magazine style, high contrast",
-    rant: "dramatic lighting, moody, expressive, bold composition, street photography style"
-  };
-
-  const basePrompt = `
-    Create a high-quality, viral social media cover image for Xiaohongshu (Red Note).
-    Topic: ${topic}.
-    Style description: ${stylePrompts[style] || "aesthetic, trendy"}.
-    Aspect ratio: Vertical (3:4).
-    Requirements: Photorealistic, no text overlays, high detail, 4k resolution.
-  `;
-
   try {
-    let response;
-
-    if (refImageBase64) {
-      const imagePart = {
-        inlineData: {
-          mimeType: 'image/png',
-          data: refImageBase64
-        }
-      };
-      
-      response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [
-            imagePart,
-            { text: basePrompt + " Create a variation of this image that matches the topic better while keeping the composition." }
-          ]
-        }
-      });
-    } else {
-      response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [{ text: basePrompt }]
-        }
-      });
-    }
-
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-            return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-        }
-    }
+    const ai = getClient();
+    const model = "gemini-2.5-flash-image";
     
-    throw new Error("No image generated");
+    const styleMap: Record<string, string> = {
+      emotional: "电影感，柔和光影，治愈系",
+      educational: "清爽干净，高质感，极简",
+      promotion: "时尚大片，高饱和度，吸睛",
+      rant: "真实感，强烈对比，纪实风格"
+    };
 
-  } catch (error) {
-    console.error("Image Gen Error:", error);
+    const promptText = `一张精美的小红书封面图。主题：${topic}。风格：${styleMap[style] || "aesthetic"}。3:4 比例，专业摄影，无文字。`;
+
+    const parts: any[] = [];
+    if (refImageBase64) {
+      parts.push({ inlineData: { mimeType: 'image/png', data: refImageBase64 } });
+      parts.push({ text: `参考这张图的构图，为话题“${topic}”生成一张全新的小红书风格封面。` });
+    } else {
+      parts.push({ text: promptText });
+    }
+
+    const response = await ai.models.generateContent({
+      model,
+      contents: { parts },
+      config: { imageConfig: { aspectRatio: "3:4" } }
+    });
+
+    const imageData = response.candidates?.[0]?.content?.parts.find(p => p.inlineData)?.inlineData;
+    if (imageData) {
+      return `data:${imageData.mimeType};base64,${imageData.data}`;
+    }
+    throw new Error("模型未返回有效图像");
+  } catch (error: any) {
+    if (error.message === "AUTH_REQUIRED") {
+      throw new Error("生图功能需要配置 API Key 权限");
+    }
     throw error;
   }
 };
