@@ -1,19 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
-/**
- * 获取 AI 实例
- * 优先级：
- * 1. 环境变量 process.env.API_KEY (生产部署最佳实践)
- * 2. 硬编码回退 (用户提供的 Key)
- */
 const getClient = () => {
-  const apiKey = process.env.API_KEY || "AIzaSyA6KBntpKfjGV9t0kkNEqKYDVUB4oPj4lE";
-  
+  const apiKey = process.env.API_KEY;
   if (!apiKey || apiKey === "undefined" || apiKey.trim() === "") {
-    throw new Error("API_KEY_NOT_FOUND");
+    throw new Error("API_KEY_MISSING");
   }
-  
   return new GoogleGenAI({ apiKey });
 };
 
@@ -33,7 +25,10 @@ export const generatePostText = async (
       - 长度: ${length}
 
       要求：标题有冲击力，正文多用 Emoji，排版整洁。
-      ${isTemplateMode ? '同时生成封面所需的主标题、副标题和正文预览。' : ''}
+      
+      特别任务：
+      1. 请为这个话题生成一段简短的【英文生图描述词】(image_prompt)，描述一张高质量、美观、适合做封面的摄影图片，不要包含文字。
+      2. ${isTemplateMode ? '生成封面所需的主标题、副标题和正文预览。' : ''}
     `;
 
     const response = await ai.models.generateContent({
@@ -47,6 +42,7 @@ export const generatePostText = async (
             title: { type: Type.STRING },
             content: { type: Type.STRING },
             tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+            image_prompt: { type: Type.STRING, description: "English prompt for AI image generation" },
             cover_summary: {
               type: Type.OBJECT,
               properties: {
@@ -57,7 +53,7 @@ export const generatePostText = async (
               nullable: true
             }
           },
-          required: ["title", "content", "tags"]
+          required: ["title", "content", "tags", "image_prompt"]
         }
       },
     });
@@ -67,6 +63,37 @@ export const generatePostText = async (
     console.error("Text Gen Error:", error);
     throw error;
   }
+};
+
+/**
+ * 使用 Pollinations.ai 免费生图
+ * 优点：完全免费、无需 API Key、基于 Flux/Stable Diffusion
+ */
+export const generatePostImage = async (
+  topic: string,
+  style: string,
+  aiImagePrompt?: string
+): Promise<string> => {
+  // 如果 Gemini 生成了专门的生图提示词则优先使用，否则使用基础描述
+  const basePrompt = aiImagePrompt || topic;
+  const styleKeywords: Record<string, string> = {
+    emotional: "cinematic lighting, healing aesthetic, moody photography, high quality",
+    educational: "clean and minimalist, high quality photography, soft natural light",
+    promotion: "fashion editorial style, high saturation, vibrant, professional product photography",
+    rant: "authentic street style photography, sharp contrast, real life atmosphere"
+  };
+
+  const finalPrompt = encodeURIComponent(`${basePrompt}, ${styleKeywords[style] || "aesthetic photography"}, 4k, high resolution, no text`);
+  
+  // 随机种子增加多样性
+  const seed = Math.floor(Math.random() * 1000000);
+  
+  // 拼接 Pollinations API URL
+  // 这里的参数：width=1080, height=1440 (符合3:4比例), nologo=true, model=flux
+  const imageUrl = `https://image.pollinations.ai/prompt/${finalPrompt}?width=1080&height=1440&seed=${seed}&nologo=true&model=flux&enhance=true`;
+
+  // 验证图片是否可用（Pollinations 会直接返回图片流，我们只需验证 URL）
+  return imageUrl;
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
@@ -84,52 +111,5 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
     return JSON.parse(response.text || "[]");
   } catch (e) {
     return [];
-  }
-};
-
-export const generatePostImage = async (
-  topic: string,
-  style: string,
-  refImageBase64?: string
-): Promise<string> => {
-  try {
-    const ai = getClient();
-    // 使用核心模型名称，避免触发预览版配额限制
-    const model = "gemini-2.5-flash-image";
-    
-    const styleMap: Record<string, string> = {
-      emotional: "电影感，治愈系",
-      educational: "清爽干净，高质感",
-      promotion: "时尚大片，高饱和度",
-      rant: "真实感，冲击力"
-    };
-
-    const promptText = `一张精美的小红书封面图。主题：${topic}。风格：${styleMap[style] || "aesthetic"}。3:4 比例，专业摄影，无文字。`;
-
-    const parts: any[] = [];
-    if (refImageBase64) {
-      parts.push({ inlineData: { mimeType: 'image/png', data: refImageBase64 } });
-      parts.push({ text: `参考构图生成话题“${topic}”的新封面。` });
-    } else {
-      parts.push({ text: promptText });
-    }
-
-    const response = await ai.models.generateContent({
-      model,
-      contents: { parts },
-      config: { imageConfig: { aspectRatio: "3:4" } }
-    });
-
-    const imageData = response.candidates?.[0]?.content?.parts.find(p => p.inlineData)?.inlineData;
-    if (imageData) {
-      return `data:${imageData.mimeType};base64,${imageData.data}`;
-    }
-    throw new Error("IMAGE_GEN_FAILED");
-  } catch (error: any) {
-    // 捕获配额错误并重新抛出，以便 UI 层处理
-    if (error.message?.includes("429") || error.message?.includes("quota") || error.message?.includes("RESOURCE_EXHAUSTED")) {
-      throw new Error("QUOTA_EXCEEDED");
-    }
-    throw error;
   }
 };

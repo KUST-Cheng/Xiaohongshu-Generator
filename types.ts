@@ -2,6 +2,7 @@ export interface GeneratedPost {
   title: string;
   content: string;
   tags: string[];
+  image_prompt?: string; // 新增：用于生图引擎的描述词
   cover_summary?: {
     main_title: string;
     highlight_text: string;
