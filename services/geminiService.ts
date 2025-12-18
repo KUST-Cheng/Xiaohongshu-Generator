@@ -3,13 +3,12 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 动态创建 AI 实例
- * 遵循规范：不预先检查，在调用时由平台注入 process.env.API_KEY
+ * 初始化 AI 实例
+ * 遵循规范：直接使用 process.env.API_KEY
  */
-const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
-  // 如果此时没有 Key，后面 API 调用会抛出 401/403，由 App.tsx 捕获并引导授权
-  return new GoogleGenAI({ apiKey: apiKey || "" });
+const createAiClient = () => {
+  // 必须直接使用 process.env.API_KEY 字符串
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 export const generatePostText = async (
@@ -19,38 +18,32 @@ export const generatePostText = async (
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
   try {
-    const ai = getAiClient();
+    const ai = createAiClient();
     
-    // 逻辑优化：长文案使用 Pro 模型以获得极高的逻辑连贯性
     const isLong = length === 'long';
-    const model = isLong ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+    const modelName = isLong ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
     
-    // 结构化长文案 Prompt
     const lengthStrategy = isLong 
-      ? `这是一篇深度长笔记（800-1000字）。请遵循：
-         1. 钩子开头：3秒内抓住注意力；
-         2. 结构化主体：使用3-5个带Emoji的【副标题】划分段落，每段提供实质性建议或故事；
-         3. 情绪收尾：升华主题，引发共鸣；
-         4. 互动提问：设计一个必回的评论区话题。`
-      : (length === 'short' ? "短小精悍，200字内。" : "标准篇幅，400字左右，排版美观。");
+      ? `这是一篇长笔记（800字以上）。请确保：
+         1. 钩子开头；
+         2. 使用 3-4 个带 Emoji 的副标题划分段落；
+         3. 结尾有行动号召（CTA）。`
+      : (length === 'short' ? "短小精悍，200字内。" : "标准长度，400字左右。");
 
     const prompt = `
-      你是一位拥有百万粉丝的小红书顶级爆款博主。
-      话题: ${topic}
-      风格: ${style}
-      篇幅策略: ${lengthStrategy}
+      你是一位小红书爆款专家。请根据以下信息创作：
+      - 主题: ${topic}
+      - 风格: ${style}
+      - 策略: ${lengthStrategy}
 
-      要求：
-      - 正文多用 Emoji，段落短小，有呼吸感。
-      - 生成 5-8 个精准的高流量标签。
-      ${isTemplateMode ? '- 同时提取封面摘要：main_title (主标题), highlight_text (高亮金句), body_preview (正文摘要)。' : ''}
+      要求：JSON格式，包含 title, content, tags。
+      ${isTemplateMode ? '同时提取封面信息：main_title, highlight_text, body_preview。' : ''}
     `;
 
     const response = await ai.models.generateContent({
-      model,
+      model: modelName,
       contents: prompt,
       config: {
-        // 为 Pro 模型开启 Thinking Budget，确保长内容逻辑连贯
         ...(isLong ? { thinkingConfig: { thinkingBudget: 4000 } } : {}),
         responseMimeType: "application/json",
         responseSchema: {
@@ -74,15 +67,14 @@ export const generatePostText = async (
       },
     });
 
-    const result = response.text;
-    if (!result) throw new Error("EMPTY_RESPONSE");
-    return JSON.parse(result);
+    if (!response.text) throw new Error("EMPTY_RESPONSE");
+    return JSON.parse(response.text);
   } catch (error: any) {
     console.error("Text Gen Error:", error);
     const msg = error.message || "";
-    // 识别授权错误或 Key 缺失
-    if (msg.includes("403") || msg.includes("401") || msg.includes("API key") || msg.includes("not found")) {
-      throw new Error("AUTH_REQUIRED");
+    // 如果返回 401 或 403，说明环境变量的 Key 失效或泄露，需要用户提供自己的 Key
+    if (msg.includes("401") || msg.includes("403") || msg.includes("API key")) {
+      throw new Error("AUTH_FAILED");
     }
     throw error;
   }
@@ -94,20 +86,20 @@ export const generatePostImage = async (
   refImageBase64?: string
 ): Promise<string> => {
   try {
-    const ai = getAiClient();
+    const ai = createAiClient();
     const styleKeywords: Record<string, string> = {
-      emotional: "soft natural lighting, cinematic photography, high-end healing vibe",
-      educational: "minimalist, clean workspace, high quality product design",
-      promotion: "commercial photography, vibrant, luxury brand style",
-      rant: "authentic street style, dramatic shadows, impactful"
+      emotional: "healing, cinematic, soft lighting",
+      educational: "minimalist, clean, top view",
+      promotion: "product photography, high quality, luxury",
+      rant: "street style, authentic, dramatic"
     };
 
     const parts: any[] = [];
     if (refImageBase64) {
       parts.push({ inlineData: { mimeType: 'image/png', data: refImageBase64 } });
-      parts.push({ text: `基于该图构图，为话题"${topic}"生成一张风格为${styleKeywords[style] || "aesthetic"}的小红书封面。` });
+      parts.push({ text: `Generate a new Xiaohongshu cover for "${topic}" based on this image style.` });
     } else {
-      parts.push({ text: `High quality aesthetic Xiaohongshu cover for: ${topic}. Style: ${styleKeywords[style] || "vibrant"}. 3:4 ratio, no text.` });
+      parts.push({ text: `High quality aesthetic Xiaohongshu cover: ${topic}. Style: ${styleKeywords[style] || "aesthetic"}. 3:4 aspect ratio.` });
     }
 
     const response = await ai.models.generateContent({
@@ -116,24 +108,22 @@ export const generatePostImage = async (
       config: { imageConfig: { aspectRatio: "3:4" } }
     });
 
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
-    }
+    const imageData = response.candidates?.[0]?.content?.parts.find(p => p.inlineData)?.inlineData?.data;
+    if (imageData) return `data:image/png;base64,${imageData}`;
     throw new Error("IMAGE_FAILED");
   } catch (error) {
-    console.warn("Image gen failed, using fallback:", error);
-    const seed = Math.floor(Math.random() * 10000);
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + ", aesthetic style, 4k")}?width=1080&height=1440&seed=${seed}&nologo=true`;
+    console.warn("Image gen fallback triggered.");
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + ", aesthetic, cinematic")}?width=1080&height=1440&nologo=true`;
   }
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
   try {
-    const ai = getAiClient();
+    const ai = createAiClient();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `话题“${topic}”的5个爆款切入点。JSON数组。`,
+      contents: `提供话题“${topic}”的5个爆款切入点。JSON数组。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
