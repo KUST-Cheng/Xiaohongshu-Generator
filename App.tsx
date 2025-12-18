@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import ControlPanel from './components/ControlPanel';
-import PreviewPanel from './components/PreviewPanel';
-import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
-import { generatePostText, generatePostImage } from './services/geminiService';
+import ControlPanel from './components/ControlPanel.tsx';
+import PreviewPanel from './components/PreviewPanel.tsx';
+import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types.ts';
+import { generatePostText, generatePostImage } from './services/geminiService.ts';
 import { Key, AlertCircle, ShieldCheck, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -15,7 +15,6 @@ const App: React.FC = () => {
   });
 
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
-  const [referenceImageRaw, setReferenceImageRaw] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [imageLoading, setImageLoading] = useState(false);
@@ -48,12 +47,17 @@ const App: React.FC = () => {
   }, []);
 
   const handleSelectPersonalKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setIsKeyError(false);
-      setIsQuotaExceeded(false);
-      setError('');
-      // 选择后立即尝试重新生成，无需等待
+    // @ts-ignore
+    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+      try {
+        // @ts-ignore
+        await window.aistudio.openSelectKey();
+        setIsKeyError(false);
+        setIsQuotaExceeded(false);
+        setError('');
+      } catch (e) {
+        console.error("Open Key Dialog Failed", e);
+      }
     }
   };
 
@@ -71,12 +75,10 @@ const App: React.FC = () => {
     const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 300);
 
     try {
-      // 1. 生成文案 (Gemini)
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(50);
 
-      // 2. 处理封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -103,7 +105,7 @@ const App: React.FC = () => {
       } else if (err.message === "QUOTA_EXCEEDED") {
         setIsQuotaExceeded(true);
       } else {
-        setError('服务连接超时，请重试');
+        setError('生成遇到异常，请检查网络或刷新页面');
       }
       setLoading(false);
     } finally {
@@ -114,20 +116,27 @@ const App: React.FC = () => {
 
   const handleExportImage = async (action: 'copy' | 'download') => {
     if (!coverRef.current) return;
+    // @ts-ignore
+    const h2c = window.html2canvas;
+    if (!h2c) {
+      alert("导出引擎加载中，请稍候...");
+      return;
+    }
+
     try {
       setImageExportStatus(action);
-      // @ts-ignore
-      const canvas = await html2canvas(coverRef.current, { scale: 2, useCORS: true, backgroundColor: '#FBF8F1' });
+      const canvas = await h2c(coverRef.current, { scale: 2, useCORS: true, backgroundColor: '#FBF8F1' });
       if (action === 'download') {
         const link = document.createElement('a');
         link.download = `rednote-cover-${Date.now()}.png`;
         link.href = canvas.toDataURL('image/png');
         link.click();
       } else {
-        canvas.toBlob((blob) => { if (blob) navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); });
+        canvas.toBlob((blob: any) => { if (blob) navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); });
       }
       setTimeout(() => setImageExportStatus(''), 2000);
     } catch (err) {
+      console.error("Export Error:", err);
       setImageExportStatus('');
     }
   };
@@ -145,11 +154,11 @@ const App: React.FC = () => {
           const file = e.target.files?.[0];
           if (file) {
             const r = new FileReader();
-            r.onloadend = () => { setReferenceImage(r.result as string); setReferenceImageRaw((r.result as string).split(',')[1]); };
+            r.onloadend = () => { setReferenceImage(r.result as string); };
             r.readAsDataURL(file);
           }
         }} 
-        onClearImage={() => { setReferenceImage(null); setReferenceImageRaw(null); }}
+        onClearImage={() => { setReferenceImage(null); }}
         loading={loading} progress={progress} onGenerate={handleGenerate} error={error}
         fileInputRef={fileInputRef}
       />
@@ -167,29 +176,23 @@ const App: React.FC = () => {
         onDownloadCover={() => handleExportImage('download')}
       />
 
-      {/* 密钥对话框 */}
       {isKeyError && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/90 backdrop-blur-md p-4">
           <div className="bg-white rounded-[32px] p-8 max-w-md w-full shadow-2xl animate-fadeIn text-center">
             <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-6 mx-auto ${keyErrorType === 'invalid' ? 'bg-orange-50' : 'bg-blue-50'}`}>
               {keyErrorType === 'invalid' ? <RefreshCw className="w-10 h-10 text-orange-500" /> : <ShieldCheck className="w-10 h-10 text-blue-500" />}
             </div>
-            <h2 className="text-2xl font-bold mb-3">{keyErrorType === 'invalid' ? '密钥需要重新授权' : '连接文案引擎'}</h2>
-            <p className="text-gray-500 mb-8 leading-relaxed">
-              {keyErrorType === 'invalid' 
-                ? '检测到您的 API 密钥已过期或无效。请重新选择一个有效的项目密钥。' 
-                : '为了安全地生成爆款文案，请点击下方按钮连接您的 API 密钥。'}
-            </p>
-            <button onClick={handleSelectPersonalKey} className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95">
+            <h2 className="text-2xl font-bold mb-3">{keyErrorType === 'invalid' ? '密钥验证失败' : '连接文案大脑'}</h2>
+            <p className="text-gray-500 mb-8 text-sm">文案生成需要 Gemini API 密钥支持。如果您已在 Vercel 配置但此处仍弹出，请尝试点击下方按钮重新连接授权。</p>
+            <button onClick={handleSelectPersonalKey} className="w-full py-4 bg-gray-900 text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95">
               <Key size={20} />
-              {keyErrorType === 'invalid' ? '重新连接' : '立即连接密钥'}
+              立即连接密钥
             </button>
-            <button onClick={() => setIsKeyError(false)} className="mt-4 text-sm text-gray-400 font-medium">以后再说</button>
+            <button onClick={() => setIsKeyError(false)} className="mt-4 text-xs text-gray-400">稍后再说</button>
           </div>
         </div>
       )}
 
-      {/* 配额不足弹窗 */}
       {isQuotaExceeded && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div className="bg-white rounded-[24px] p-8 max-w-sm w-full shadow-2xl text-center">
@@ -197,11 +200,8 @@ const App: React.FC = () => {
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
             <h2 className="text-xl font-bold mb-2">生成频率太快啦</h2>
-            <p className="text-gray-500 mb-8 text-sm">Gemini 免费版有次数限制。请稍等一分钟，或连接另一个 API Key。</p>
-            <div className="space-y-3">
-              <button onClick={() => setIsQuotaExceeded(false)} className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl">我知道了</button>
-              <button onClick={handleSelectPersonalKey} className="w-full py-4 text-red-600 font-bold">更换密钥</button>
-            </div>
+            <p className="text-gray-500 mb-8 text-sm">由于使用免费额度，请求频率受限。请等待 60 秒后再尝试。</p>
+            <button onClick={() => setIsQuotaExceeded(false)} className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl">确定</button>
           </div>
         </div>
       )}
