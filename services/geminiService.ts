@@ -3,17 +3,10 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 每次请求时动态创建实例，确保使用最新的 process.env.API_KEY。
- * 如果 API KEY 尚未注入，将抛出特定错误以触发 App.tsx 中的密钥选择 UI。
+ * Creates a new GoogleGenAI client instance using the mandatory process.env.API_KEY.
+ * Always initialized right before use to ensure the correct environment state.
  */
-const getClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey || apiKey === "undefined" || apiKey === "YOUR_API_KEY" || apiKey.trim() === "") {
-    throw new Error("API_KEY_MISSING");
-  }
-  // 必须直接使用 process.env.API_KEY 进行初始化
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
-};
+const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const generatePostText = async (
   topic: string,
@@ -22,21 +15,21 @@ export const generatePostText = async (
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
   try {
-    const ai = getClient();
+    const ai = getAi();
     const prompt = `
-      你是一位拥有百万粉丝的小红书爆款博主。
-      请根据以下信息创作一篇极具吸引力的笔记：
-      - 主题: ${topic}
-      - 风格: ${style}
-      - 长度: ${length}
+      你是一位顶级小红书博主。请根据以下信息创作笔记：
+      主题: ${topic}
+      风格: ${style}
+      篇幅: ${length}
 
-      要求：标题有冲击力，正文多用 Emoji。
-      
-      特别任务：
-      1. 生成一段简短的英文生图描述词 (image_prompt)，用于 AI 生图。
-      2. ${isTemplateMode ? '提取封面信息：main_title, highlight_text, body_preview。' : 'cover_summary 设为 null。'}
+      要求：
+      1. 标题：充满悬念或情绪，控制在20字内。
+      2. 正文：逻辑分明，段落短小，大量使用 Emoji。
+      3. 生成 image_prompt：描述一张符合本笔记的高质量、INS风格背景图（英文）。
+      4. 如果 isTemplateMode 为真，提取：main_title, highlight_text, body_preview。
     `;
 
+    // Using gemini-3-flash-preview for general text tasks
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
@@ -65,15 +58,12 @@ export const generatePostText = async (
     });
 
     const text = response.text;
-    if (!text) throw new Error("EMPTY_RESPONSE");
+    if (!text) throw new Error("API_EMPTY_RESPONSE");
     return JSON.parse(text);
   } catch (error: any) {
-    console.error("Gemini Gen Error:", error);
+    console.error("Gemini Error:", error);
     const msg = error.message || "";
-    // 捕获“请求的项目未找到”错误，这通常意味着密钥失效或项目配置有误
-    if (msg.includes("Requested entity was not found")) {
-      throw new Error("KEY_NOT_FOUND_ON_PROJECT");
-    }
+    if (msg.includes("Requested entity was not found")) throw new Error("KEY_NOT_FOUND_ON_PROJECT");
     if (msg.includes("401") || msg.includes("403")) throw new Error("INVALID_API_KEY");
     if (msg.includes("429")) throw new Error("QUOTA_EXCEEDED");
     throw error;
@@ -85,62 +75,46 @@ export const generatePostImage = async (
   style: string,
   aiImagePrompt?: string
 ): Promise<string> => {
-  const basePrompt = aiImagePrompt || topic;
-  const styleKeywords: Record<string, string> = {
-    emotional: "cinematic photography, healing vibes",
-    educational: "minimalist, professional workspace",
-    promotion: "luxurious aesthetic product display",
-    rant: "authentic urban realism"
+  // Fallback for image generation in case of failures
+  const fallback = () => {
+    const seed = Math.floor(Math.random() * 1000000);
+    const prompt = encodeURIComponent(`${aiImagePrompt || topic}, aesthetic, high resolution, soft lighting`);
+    return `https://image.pollinations.ai/prompt/${prompt}?width=1080&height=1440&seed=${seed}&nologo=true&model=flux`;
   };
-  
-  const finalPrompt = `${basePrompt}, ${styleKeywords[style] || "high quality photography"}, 4k, no text`;
-  
-  const ai = getClient();
-  // 遵循指南：默认使用 gemini-2.5-flash-image 进行生图
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
-    contents: {
-      parts: [
-        {
-          text: finalPrompt,
-        },
-      ],
-    },
-    config: {
-      imageConfig: {
-        aspectRatio: "3:4"
-      }
-    }
-  });
 
-  // 遵循指南：迭代所有部分以查找图像部分，不假设第一个部分是图像
-  if (response.candidates?.[0]?.content?.parts) {
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        const base64EncodeString: string = part.inlineData.data;
-        return `data:image/png;base64,${base64EncodeString}`;
-      } else if (part.text) {
-        console.log("Model feedback during image gen:", part.text);
+  try {
+    const ai = getAi();
+    // Using gemini-2.5-flash-image for general image generation tasks
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: aiImagePrompt || topic }] },
+      config: { imageConfig: { aspectRatio: "3:4" } }
+    });
+
+    if (response.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        // Correctly handle the inlineData from the response
+        if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
+    return fallback();
+  } catch (e) {
+    return fallback();
   }
-  
-  throw new Error("IMAGE_GENERATION_FAILED");
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
   try {
-    const ai = getClient();
+    const ai = getAi();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `针对话题“${topic}”，给5个爆款标题。JSON数组格式。`,
+      contents: `给话题“${topic}”提供5个爆款标题，JSON数组格式。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
       }
     });
-    // 使用 response.text 属性直接提取生成的文本
     return JSON.parse(response.text || "[]");
   } catch (e) {
     return [];
