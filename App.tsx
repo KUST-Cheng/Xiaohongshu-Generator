@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import ControlPanel from './components/ControlPanel.tsx';
-import PreviewPanel from './components/PreviewPanel.tsx';
-import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types.ts';
-import { generatePostText, generatePostImage } from './services/geminiService.ts';
+import ControlPanel from './components/ControlPanel';
+import PreviewPanel from './components/PreviewPanel';
+import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
+import { generatePostText, generatePostImage } from './services/geminiService';
 import { Key, AlertCircle, ShieldCheck, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -47,17 +47,18 @@ const App: React.FC = () => {
   }, []);
 
   const handleSelectPersonalKey = async () => {
-    // @ts-ignore
-    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+    const g = globalThis as any;
+    if (g.aistudio && typeof g.aistudio.openSelectKey === 'function') {
       try {
-        // @ts-ignore
-        await window.aistudio.openSelectKey();
+        await g.aistudio.openSelectKey();
         setIsKeyError(false);
         setIsQuotaExceeded(false);
         setError('');
       } catch (e) {
-        console.error("Open Key Dialog Failed", e);
+        console.error("Key Selection Failed", e);
       }
+    } else {
+      alert("当前环境不支持弹出密钥选择器，请检查配置。");
     }
   };
 
@@ -95,7 +96,7 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("Generate Error Flow:", err);
+      console.error("App Generation Error:", err);
       if (err.message === "API_KEY_MISSING") {
         setIsKeyError(true);
         setKeyErrorType('missing');
@@ -105,7 +106,7 @@ const App: React.FC = () => {
       } else if (err.message === "QUOTA_EXCEEDED") {
         setIsQuotaExceeded(true);
       } else {
-        setError('生成遇到异常，请检查网络或刷新页面');
+        setError('生成遇到异常，可能是 API 访问受限');
       }
       setLoading(false);
     } finally {
@@ -116,27 +117,25 @@ const App: React.FC = () => {
 
   const handleExportImage = async (action: 'copy' | 'download') => {
     if (!coverRef.current) return;
-    // @ts-ignore
-    const h2c = window.html2canvas;
-    if (!h2c) {
-      alert("导出引擎加载中，请稍候...");
-      return;
-    }
+    const g = globalThis as any;
+    const h2c = g.html2canvas;
+    if (!h2c) return;
 
     try {
       setImageExportStatus(action);
       const canvas = await h2c(coverRef.current, { scale: 2, useCORS: true, backgroundColor: '#FBF8F1' });
       if (action === 'download') {
         const link = document.createElement('a');
-        link.download = `rednote-cover-${Date.now()}.png`;
+        link.download = `rednote-${Date.now()}.png`;
         link.href = canvas.toDataURL('image/png');
         link.click();
       } else {
-        canvas.toBlob((blob: any) => { if (blob) navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); });
+        canvas.toBlob((blob: any) => { 
+          if (blob) navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); 
+        });
       }
       setTimeout(() => setImageExportStatus(''), 2000);
     } catch (err) {
-      console.error("Export Error:", err);
       setImageExportStatus('');
     }
   };
@@ -182,13 +181,18 @@ const App: React.FC = () => {
             <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-6 mx-auto ${keyErrorType === 'invalid' ? 'bg-orange-50' : 'bg-blue-50'}`}>
               {keyErrorType === 'invalid' ? <RefreshCw className="w-10 h-10 text-orange-500" /> : <ShieldCheck className="w-10 h-10 text-blue-500" />}
             </div>
-            <h2 className="text-2xl font-bold mb-3">{keyErrorType === 'invalid' ? '密钥验证失败' : '连接文案大脑'}</h2>
-            <p className="text-gray-500 mb-8 text-sm">文案生成需要 Gemini API 密钥支持。如果您已在 Vercel 配置但此处仍弹出，请尝试点击下方按钮重新连接授权。</p>
-            <button onClick={handleSelectPersonalKey} className="w-full py-4 bg-gray-900 text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95">
+            <h2 className="text-2xl font-bold mb-3">{keyErrorType === 'invalid' ? '密钥授权失效' : '连接 AI 文案引擎'}</h2>
+            <p className="text-gray-500 mb-8 text-sm leading-relaxed">
+              为了保障生成质量，爆款文案生成需要连接 Gemini API 密钥。即使您已配置环境变量，也可能由于前端安全限制需要在此手动连接一次。
+            </p>
+            <button 
+              onClick={handleSelectPersonalKey}
+              className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95"
+            >
               <Key size={20} />
               立即连接密钥
             </button>
-            <button onClick={() => setIsKeyError(false)} className="mt-4 text-xs text-gray-400">稍后再说</button>
+            <button onClick={() => setIsKeyError(false)} className="mt-4 text-xs text-gray-400 font-medium">跳过</button>
           </div>
         </div>
       )}
@@ -199,8 +203,8 @@ const App: React.FC = () => {
             <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-bold mb-2">生成频率太快啦</h2>
-            <p className="text-gray-500 mb-8 text-sm">由于使用免费额度，请求频率受限。请等待 60 秒后再尝试。</p>
+            <h2 className="text-xl font-bold mb-2">生成频率受限</h2>
+            <p className="text-gray-500 mb-8 text-sm">由于使用免费额度，请求频率受限。请等待 60 秒后再尝试，或连接您的个人密钥。</p>
             <button onClick={() => setIsQuotaExceeded(false)} className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl">确定</button>
           </div>
         </div>

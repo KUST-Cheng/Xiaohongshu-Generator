@@ -78,3 +78,23 @@ const PreviewPanel: React.FC<Props> = ({
               <div className="animate-fadeIn">
                 <h1 className="text-sm font-bold mb-2">{generatedData.title}</h1>
                 <div className="text-[12px] leading-relaxed whitespace-pre-wrap">{generatedData.content}</div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {generatedData.tags?.map((tag, idx) => (
+                    <span key={idx} className="text-blue-600 text-[12px]">#{tag.replace('#','')}</span>
+                  ))}
+                </div>
+              </div>
+            ) : <div className="text-center py-10 text-gray-300 text-xs">灵感正在加载中...</div>}
+          </div>
+        </div>
+
+        <div className="h-12 bg-white border-t absolute bottom-0 left-0 right-0 flex items-center px-4 justify-between z-10">
+          <div className="flex-1 h-8 bg-gray-100 rounded-full flex items-center px-4 text-gray-300 text-xs mr-4">赞个评论吧 ...</div>
+          <div className="flex gap-4 text-gray-600"><Heart size={18} /><Star size={18} /><MessageCircle size={18} /></div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default PreviewPanel;

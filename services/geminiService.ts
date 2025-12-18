@@ -1,20 +1,20 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { GeneratedPost } from "../types.ts";
+import { GeneratedPost } from "../types";
 
 /**
- * 极简安全地获取 API Key
- * 防止 process 未定义导致的全局脚本崩溃
+ * 极其安全地尝试获取 API Key
+ * 兼容 Vite、Webpack 以及各种浏览器环境，防止 ReferenceError
  */
 const getApiKey = (): string | null => {
   try {
-    if (typeof process !== "undefined" && process.env && process.env.API_KEY) {
-      const key = process.env.API_KEY;
-      if (key !== "undefined" && key.trim() !== "" && key !== "YOUR_API_KEY") {
-        return key;
-      }
+    // 使用 globalThis 访问以防止 ReferenceError: process is not defined
+    const g = globalThis as any;
+    const key = g.process?.env?.API_KEY;
+    if (key && key !== "undefined" && key.trim() !== "" && key !== "YOUR_API_KEY") {
+      return key;
     }
   } catch (e) {
-    // 静默失败
+    // 忽略任何环境检测错误
   }
   return null;
 };
@@ -45,7 +45,7 @@ export const generatePostText = async (
       要求：标题有冲击力，正文多用 Emoji。
       
       特别任务：
-      1. 生成一段英文生图描述词 (image_prompt)，用于 AI 生图。
+      1. 生成一段简短的英文生图描述词 (image_prompt)，用于 AI 生图。
       2. ${isTemplateMode ? '提取封面信息：main_title, highlight_text, body_preview。' : 'cover_summary 设为 null。'}
     `;
 
@@ -80,7 +80,7 @@ export const generatePostText = async (
     if (!text) throw new Error("EMPTY_RESPONSE");
     return JSON.parse(text);
   } catch (error: any) {
-    console.error("Gemini Text Generation Error:", error);
+    console.error("Gemini Gen Error:", error);
     const msg = error.message || "";
     if (msg.includes("401") || msg.includes("403")) throw new Error("INVALID_API_KEY");
     if (msg.includes("429")) throw new Error("QUOTA_EXCEEDED");
@@ -95,12 +95,12 @@ export const generatePostImage = async (
 ): Promise<string> => {
   const basePrompt = aiImagePrompt || topic;
   const styleKeywords: Record<string, string> = {
-    emotional: "cinematic photography, soft light",
-    educational: "minimalist, clean workspace",
-    promotion: "luxurious product display",
-    rant: "authentic urban style"
+    emotional: "cinematic photography, healing vibes",
+    educational: "minimalist, professional workspace",
+    promotion: "luxurious aesthetic product display",
+    rant: "authentic urban realism"
   };
-  const finalPrompt = encodeURIComponent(`${basePrompt}, ${styleKeywords[style] || "aesthetic photography"}, 4k`);
+  const finalPrompt = encodeURIComponent(`${basePrompt}, ${styleKeywords[style] || "high quality photography"}, 4k, no text`);
   const seed = Math.floor(Math.random() * 1000000);
   return `https://image.pollinations.ai/prompt/${finalPrompt}?width=1080&height=1440&seed=${seed}&nologo=true&model=flux&enhance=true`;
 };
@@ -111,7 +111,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
     const ai = getClient();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `针对话题“${topic}”，给5个爆款标题。JSON数组。`,
+      contents: `针对话题“${topic}”，给5个爆款标题。JSON数组格式。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
