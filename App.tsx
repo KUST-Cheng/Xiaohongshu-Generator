@@ -3,7 +3,7 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
-import { Key, AlertCircle, Sparkles } from 'lucide-react';
+import { Key, AlertCircle, Image as ImageIcon } from 'lucide-react';
 
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
@@ -22,7 +22,6 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [isAuthRequired, setIsAuthRequired] = useState(false);
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
   const [imageExportStatus, setImageExportStatus] = useState<'copy' | 'download' | ''>('');
   const [copySuccess, setCopySuccess] = useState(false);
@@ -45,27 +44,19 @@ const App: React.FC = () => {
   }, []);
 
   const handleSelectPersonalKey = async () => {
-    // Fix: Access aistudio via any to avoid TS error
-    if ((window as any).aistudio && typeof (window as any).aistudio.openSelectKey === 'function') {
-      try {
-        await (window as any).aistudio.openSelectKey();
-        // Fix: Assume the key selection was successful after triggering openSelectKey() as per guidelines
-        setIsAuthRequired(false);
-        setIsQuotaExceeded(false);
-        setError('');
-      } catch (e) {
-        console.error("Open Key Dialog Error:", e);
-      }
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setIsQuotaExceeded(false);
+      setError('');
     }
   };
 
   const handleExportImage = async (action: 'copy' | 'download') => {
-    // Fix: Access html2canvas via any to avoid TS error on window object
-    if (!coverRef.current || !(window as any).html2canvas) return;
+    if (!coverRef.current) return;
     try {
       setImageExportStatus(action);
-      // Fix: Access html2canvas via any cast to handle dynamic script loading
-      const canvas = await (window as any).html2canvas(coverRef.current, {
+      // @ts-ignore
+      const canvas = await html2canvas(coverRef.current, {
         scale: 2,
         useCORS: true,
         backgroundColor: '#FBF8F1'
@@ -85,6 +76,7 @@ const App: React.FC = () => {
           }
         });
       }
+      
       setTimeout(() => setImageExportStatus(''), 2000);
     } catch (err) {
       console.error('Export error:', err);
@@ -98,32 +90,20 @@ const App: React.FC = () => {
       return;
     }
 
-    // Fix: Proactively check for API key selection before generation, required for Gemini models
-    if ((window as any).aistudio && typeof (window as any).aistudio.hasSelectedApiKey === 'function') {
-      const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-      if (!hasKey) {
-        setIsAuthRequired(true);
-        return;
-      }
-    }
-
     setLoading(true);
-    setProgress(5);
+    setProgress(0);
     setError('');
     setIsQuotaExceeded(false);
-    setIsAuthRequired(false);
     
-    // 长文案进度条更缓慢，提供心理预期
-    const speed = length === 'long' ? 100 : 300;
-    const progInt = setInterval(() => setProgress(p => p >= 95 ? p : p + 2), speed);
+    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 200);
 
     try {
-      // 1. 生成爆款文案
+      // 1. 生成文案
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
-      setProgress(60);
+      setProgress(50);
 
-      // 2. 更新封面数据或生成 AI 封面
+      // 2. 处理封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -133,23 +113,28 @@ const App: React.FC = () => {
         }));
       } else if (coverMode !== 'template') {
         setImageLoading(true);
-        const img = await generatePostImage(topic, style, coverMode === 'ref' ? referenceImageRaw! : undefined);
-        setGeneratedImage(img);
+        try {
+          const img = await generatePostImage(topic, style, coverMode === 'ref' ? referenceImageRaw! : undefined);
+          setGeneratedImage(img);
+        } catch (imgErr: any) {
+          if (imgErr.message === "QUOTA_EXCEEDED") {
+            setIsQuotaExceeded(true);
+            setError("生图配额已耗尽，建议使用“爆款模板”或连接个人 Key。");
+          } else {
+            throw imgErr;
+          }
+        }
       }
       
       setProgress(100);
-      setTimeout(() => setLoading(false), 300);
+      setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("Generate Error Flow:", err);
-      const msg = err.message || "";
-      
-      if (msg === "API_KEY_MISSING" || msg === "AUTH_FAILED") {
-        setIsAuthRequired(true);
-      } else if (msg === "QUOTA_EXCEEDED") {
+      console.error(err);
+      if (err.message === "QUOTA_EXCEEDED") {
         setIsQuotaExceeded(true);
-        setError("API 配额已耗尽，请稍后再试或更换 Key。");
+        setError("API 配额已耗尽。");
       } else {
-        setError(msg || '生成失败，请检查网络或重试');
+        setError(err.message || '生成失败，请重试');
       }
       setLoading(false);
     } finally {
@@ -199,46 +184,45 @@ const App: React.FC = () => {
         onDownloadCover={() => handleExportImage('download')}
       />
 
-      {/* API 授权引导弹窗 */}
-      {isAuthRequired && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-fadeIn">
-          <div className="bg-white rounded-[32px] p-10 max-w-md w-full shadow-2xl text-center border border-gray-100">
-            <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 mx-auto">
-              <Key className="w-10 h-10 text-blue-500" />
-            </div>
-            <h2 className="text-2xl font-bold mb-3">连接 AI 创作引擎</h2>
-            <p className="text-gray-500 mb-8 leading-relaxed">
-              为了提供高品质的文案生成体验，我们需要连接您的 Gemini API 密钥。点击下方按钮即可完成安全授权。
-            </p>
-            <button 
-              onClick={handleSelectPersonalKey}
-              className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl"
-            >
-              <Sparkles size={20} />
-              立即连接授权
-            </button>
-            <div className="mt-6">
-              <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="text-xs text-gray-400 hover:text-gray-600 underline">
-                如何获取付费项目 API Key？
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 配额不足弹窗 */}
       {isQuotaExceeded && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-[24px] p-8 max-sm w-full shadow-2xl text-center">
+          <div className="bg-white rounded-[24px] p-8 max-w-sm w-full shadow-2xl animate-fadeIn border border-gray-100">
             <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-bold mb-2">API 频率限制</h2>
-            <p className="text-gray-500 mb-8 text-sm">当前密钥的免费额度已达上限。请稍候片刻再试，或更换已启用计费的项目密钥。</p>
+            <h2 className="text-xl font-bold text-center mb-2">生图功能配额已耗尽</h2>
+            <p className="text-gray-500 text-center mb-8 text-sm leading-relaxed">
+              Google 免费层级的 AI 生图频率限制非常严格。建议您切换到 <span className="text-red-500 font-bold">“爆款模板”</span> 模式，它不消耗生图额度且效果极佳！
+            </p>
+            
             <div className="space-y-3">
-              <button onClick={handleSelectPersonalKey} className="w-full py-3 bg-red-500 text-white font-bold rounded-xl">更换密钥</button>
-              <button onClick={() => setIsQuotaExceeded(false)} className="w-full py-3 text-gray-400 font-medium">取消</button>
+              <button 
+                onClick={() => {
+                  setCoverMode('template');
+                  setIsQuotaExceeded(false);
+                }}
+                className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl flex items-center justify-center gap-2"
+              >
+                <ImageIcon size={18} />
+                切换到“爆款模板”模式
+              </button>
+              
+              <button 
+                onClick={handleSelectPersonalKey}
+                className="w-full py-4 bg-red-500 text-white font-bold rounded-xl flex items-center justify-center gap-2"
+              >
+                <Key size={18} />
+                连接个人 API Key
+              </button>
             </div>
+            
+            <button 
+              onClick={() => setIsQuotaExceeded(false)}
+              className="w-full mt-3 py-3 text-gray-400 text-sm font-medium"
+            >
+              稍后再说
+            </button>
           </div>
         </div>
       )}
