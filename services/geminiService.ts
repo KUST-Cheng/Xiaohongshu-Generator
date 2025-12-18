@@ -3,17 +3,14 @@ import { GeneratedPost } from "../types";
 
 /**
  * 获取 AI 实例
- * 优先级：
- * 1. 环境变量 process.env.API_KEY (生产部署最佳实践)
- * 2. 硬编码回退 (用户提供的 Key)
+ * 严格遵守安全规范：仅从环境变量获取，不进行任何本地硬编码
+ * 每次调用即时创建，确保获取最新的 process.env.API_KEY
  */
-const getClient = () => {
-  const apiKey = process.env.API_KEY || "AIzaSyA6KBntpKfjGV9t0kkNEqKYDVUB4oPj4lE";
-  
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
   if (!apiKey || apiKey === "undefined" || apiKey.trim() === "") {
-    throw new Error("API_KEY_NOT_FOUND");
+    throw new Error("API_KEY_MISSING");
   }
-  
   return new GoogleGenAI({ apiKey });
 };
 
@@ -24,22 +21,38 @@ export const generatePostText = async (
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
   try {
-    const ai = getClient();
+    const ai = getAiClient();
+    
+    // 针对长文案（Long）使用 Pro 模型以获得更好的连贯性和深度
+    const isLong = length === 'long';
+    const model = isLong ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+    
+    // 优化长文案 Prompt
+    const lengthDetail = isLong 
+      ? "这是一篇长笔记（约800-1000字）。请确保结构严谨：1. 强吸引力钩子开头；2. 使用3-4个带Emoji的副标题划分核心段落，内容要详实、有深度；3. 总结金句 + 互动提问结尾。" 
+      : (length === 'short' ? "短小精悍，200字内，直击痛点。" : "标准小红书篇幅，400字左右，结构清晰。");
+
     const prompt = `
-      你是一位拥有百万粉丝的小红书爆款博主。
-      请根据以下信息创作一篇极具吸引力的笔记：
+      你是一位拥有百万粉丝的小红书顶级爆款博主，擅长创作高点击、高转化、高互动的笔记。
+      请根据以下信息创作：
       - 主题: ${topic}
       - 风格: ${style}
       - 长度: ${length}
+      - 具体要求: ${lengthDetail}
 
-      要求：标题有冲击力，正文多用 Emoji，排版整洁。
-      ${isTemplateMode ? '同时生成封面所需的主标题、副标题和正文预览。' : ''}
+      创作准则：
+      1. 标题：充满情绪价值、悬念或痛点，控制在20字内。
+      2. 排版：段落短小，大量使用 Emoji 增加呼吸感。
+      3. 标签：末尾提供 5-8 个精准的高流量标签。
+      ${isTemplateMode ? '4. 提取封面关键信息：main_title (10字内主标题), highlight_text (金句), body_preview (30字正文摘要)。' : ''}
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model,
       contents: prompt,
       config: {
+        // 为长文案分配思考预算，确保逻辑不崩溃
+        ...(isLong ? { thinkingConfig: { thinkingBudget: 4000 } } : {}),
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -62,28 +75,18 @@ export const generatePostText = async (
       },
     });
 
-    return JSON.parse(response.text || "{}");
+    const text = response.text;
+    if (!text) throw new Error("API_EMPTY_RESPONSE");
+    return JSON.parse(text);
   } catch (error: any) {
-    console.error("Text Gen Error:", error);
+    console.error("Text Generation Error:", error);
+    const msg = error.message || "";
+    // 捕捉 Key 泄露、无效或配额错误
+    if (msg.includes("leaked") || msg.includes("403") || msg.includes("401") || msg.includes("not found")) {
+      throw new Error("AUTH_FAILED");
+    }
+    if (msg.includes("429")) throw new Error("QUOTA_EXCEEDED");
     throw error;
-  }
-};
-
-export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
-  if (!topic) return [];
-  try {
-    const ai = getClient();
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `针对话题“${topic}”，给出5个小红书爆款切入点，返回JSON字符串数组。`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
-      }
-    });
-    return JSON.parse(response.text || "[]");
-  } catch (e) {
-    return [];
   }
 };
 
@@ -93,23 +96,22 @@ export const generatePostImage = async (
   refImageBase64?: string
 ): Promise<string> => {
   try {
-    const ai = getClient();
-    // 使用核心模型名称，避免触发预览版配额限制
-    const model = "gemini-2.5-flash-image";
+    const ai = getAiClient();
+    const model = 'gemini-2.5-flash-image';
     
-    const styleMap: Record<string, string> = {
-      emotional: "电影感，治愈系",
-      educational: "清爽干净，高质感",
-      promotion: "时尚大片，高饱和度",
-      rant: "真实感，冲击力"
+    const styleKeywords: Record<string, string> = {
+      emotional: "soft light, cinematic, emotional photography, healing vibe",
+      educational: "minimalist, clean workspace, high quality design, flat lay",
+      promotion: "commercial photography, high contrast, vibrant, luxury",
+      rant: "street style, authentic, gritty, impactful"
     };
 
-    const promptText = `一张精美的小红书封面图。主题：${topic}。风格：${styleMap[style] || "aesthetic"}。3:4 比例，专业摄影，无文字。`;
+    const promptText = `Aesthetic Xiaohongshu cover image for: "${topic}". Style: ${styleKeywords[style] || "aesthetic"}. 3:4 aspect ratio, high resolution, professional photography, no text.`;
 
     const parts: any[] = [];
     if (refImageBase64) {
       parts.push({ inlineData: { mimeType: 'image/png', data: refImageBase64 } });
-      parts.push({ text: `参考构图生成话题“${topic}”的新封面。` });
+      parts.push({ text: `Generate a new cover based on this reference image's composition for topic "${topic}".` });
     } else {
       parts.push({ text: promptText });
     }
@@ -120,16 +122,34 @@ export const generatePostImage = async (
       config: { imageConfig: { aspectRatio: "3:4" } }
     });
 
-    const imageData = response.candidates?.[0]?.content?.parts.find(p => p.inlineData)?.inlineData;
-    if (imageData) {
-      return `data:${imageData.mimeType};base64,${imageData.data}`;
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
     }
-    throw new Error("IMAGE_GEN_FAILED");
+    throw new Error("IMAGE_DATA_MISSING");
   } catch (error: any) {
-    // 捕获配额错误并重新抛出，以便 UI 层处理
-    if (error.message?.includes("429") || error.message?.includes("quota") || error.message?.includes("RESOURCE_EXHAUSTED")) {
-      throw new Error("QUOTA_EXCEEDED");
-    }
-    throw error;
+    console.warn("Image gen failed, using fallback:", error);
+    // 降级使用备用生图，防止阻塞
+    const seed = Math.floor(Math.random() * 99999);
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + ", aesthetic, 4k, cinematic")}?width=1080&height=1440&seed=${seed}&nologo=true`;
+  }
+};
+
+export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
+  if (!topic) return [];
+  try {
+    const ai = getAiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `针对话题“${topic}”，提供5个小红书爆款切入点，JSON数组格式。`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
+      }
+    });
+    return JSON.parse(response.text || "[]");
+  } catch (e) {
+    return [];
   }
 };

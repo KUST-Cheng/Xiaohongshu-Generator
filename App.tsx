@@ -3,7 +3,7 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
-import { Key, AlertCircle, Image as ImageIcon } from 'lucide-react';
+import { Key, AlertCircle, Image as ImageIcon, ShieldAlert } from 'lucide-react';
 
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
@@ -22,6 +22,7 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [isAuthRequired, setIsAuthRequired] = useState(false);
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
   const [imageExportStatus, setImageExportStatus] = useState<'copy' | 'download' | ''>('');
   const [copySuccess, setCopySuccess] = useState(false);
@@ -44,18 +45,26 @@ const App: React.FC = () => {
   }, []);
 
   const handleSelectPersonalKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setIsQuotaExceeded(false);
-      setError('');
+    const aiStudio = (window as any).aistudio;
+    if (aiStudio && typeof aiStudio.openSelectKey === 'function') {
+      try {
+        await aiStudio.openSelectKey();
+        setIsAuthRequired(false);
+        setIsQuotaExceeded(false);
+        setError('');
+        // 选择完后自动触发一次生成体验更佳
+        if (topic) handleGenerate();
+      } catch (e) {
+        console.error("Open Key Dialog Error:", e);
+      }
     }
   };
 
   const handleExportImage = async (action: 'copy' | 'download') => {
-    if (!coverRef.current) return;
+    const html2canvas = (window as any).html2canvas;
+    if (!coverRef.current || !html2canvas) return;
     try {
       setImageExportStatus(action);
-      // @ts-ignore
       const canvas = await html2canvas(coverRef.current, {
         scale: 2,
         useCORS: true,
@@ -76,7 +85,6 @@ const App: React.FC = () => {
           }
         });
       }
-      
       setTimeout(() => setImageExportStatus(''), 2000);
     } catch (err) {
       console.error('Export error:', err);
@@ -91,17 +99,20 @@ const App: React.FC = () => {
     }
 
     setLoading(true);
-    setProgress(0);
+    setProgress(5);
     setError('');
     setIsQuotaExceeded(false);
+    setIsAuthRequired(false);
     
-    const progInt = setInterval(() => setProgress(p => p >= 90 ? p : p + 5), 200);
+    // 进度条平滑处理
+    const speed = length === 'long' ? 120 : 250;
+    const progInt = setInterval(() => setProgress(p => p >= 92 ? p : p + (p < 50 ? 5 : 2)), speed);
 
     try {
       // 1. 生成文案
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
-      setProgress(50);
+      setProgress(60);
 
       // 2. 处理封面
       if (coverMode === 'template' && postData.cover_summary) {
@@ -113,26 +124,19 @@ const App: React.FC = () => {
         }));
       } else if (coverMode !== 'template') {
         setImageLoading(true);
-        try {
-          const img = await generatePostImage(topic, style, coverMode === 'ref' ? referenceImageRaw! : undefined);
-          setGeneratedImage(img);
-        } catch (imgErr: any) {
-          if (imgErr.message === "QUOTA_EXCEEDED") {
-            setIsQuotaExceeded(true);
-            setError("生图配额已耗尽，建议使用“爆款模板”或连接个人 Key。");
-          } else {
-            throw imgErr;
-          }
-        }
+        const img = await generatePostImage(topic, style, coverMode === 'ref' ? referenceImageRaw! : undefined);
+        setGeneratedImage(img);
       }
       
       setProgress(100);
-      setTimeout(() => setLoading(false), 500);
+      setTimeout(() => setLoading(false), 300);
     } catch (err: any) {
-      console.error(err);
-      if (err.message === "QUOTA_EXCEEDED") {
+      console.error("Generate Error Flow:", err);
+      if (err.message === "AUTH_FAILED" || err.message === "API_KEY_MISSING") {
+        setIsAuthRequired(true);
+      } else if (err.message === "QUOTA_EXCEEDED") {
         setIsQuotaExceeded(true);
-        setError("API 配额已耗尽。");
+        setError("当前 Key 配额已耗尽。");
       } else {
         setError(err.message || '生成失败，请重试');
       }
@@ -144,7 +148,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans">
+    <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans relative">
       <ControlPanel 
         topic={topic} setTopic={setTopic}
         style={style} setStyle={setStyle}
@@ -184,45 +188,44 @@ const App: React.FC = () => {
         onDownloadCover={() => handleExportImage('download')}
       />
 
+      {/* 授权失效/密钥泄露弹窗 */}
+      {isAuthRequired && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-fadeIn">
+          <div className="bg-white rounded-[32px] p-10 max-w-md w-full shadow-2xl text-center">
+            <div className="w-20 h-20 bg-orange-50 rounded-full flex items-center justify-center mb-6 mx-auto">
+              <ShieldAlert className="w-10 h-10 text-orange-500" />
+            </div>
+            <h2 className="text-2xl font-bold mb-3 text-gray-900">API 密钥已失效</h2>
+            <p className="text-gray-500 mb-8 leading-relaxed">
+              原有的 API 密钥可能因泄露被官方禁用或权限不足。为了继续生成爆款笔记，请连接您自己的 Google Gemini API 密钥。
+            </p>
+            <button 
+              onClick={handleSelectPersonalKey}
+              className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl"
+            >
+              <Key size={20} />
+              重新连接 API 密钥
+            </button>
+            <p className="mt-6 text-xs text-gray-400">
+              密钥将安全存储在您的浏览器会话中。
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* 配额不足弹窗 */}
       {isQuotaExceeded && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-[24px] p-8 max-w-sm w-full shadow-2xl animate-fadeIn border border-gray-100">
+          <div className="bg-white rounded-[24px] p-8 max-w-sm w-full shadow-2xl text-center">
             <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
               <AlertCircle className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-bold text-center mb-2">生图功能配额已耗尽</h2>
-            <p className="text-gray-500 text-center mb-8 text-sm leading-relaxed">
-              Google 免费层级的 AI 生图频率限制非常严格。建议您切换到 <span className="text-red-500 font-bold">“爆款模板”</span> 模式，它不消耗生图额度且效果极佳！
-            </p>
-            
+            <h2 className="text-xl font-bold mb-2">API 配额超限</h2>
+            <p className="text-gray-500 mb-8 text-sm">当前免费层级的请求频率已达上限。建议稍后再试，或切换到“爆款模板”模式（不消耗生图额度）。</p>
             <div className="space-y-3">
-              <button 
-                onClick={() => {
-                  setCoverMode('template');
-                  setIsQuotaExceeded(false);
-                }}
-                className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl flex items-center justify-center gap-2"
-              >
-                <ImageIcon size={18} />
-                切换到“爆款模板”模式
-              </button>
-              
-              <button 
-                onClick={handleSelectPersonalKey}
-                className="w-full py-4 bg-red-500 text-white font-bold rounded-xl flex items-center justify-center gap-2"
-              >
-                <Key size={18} />
-                连接个人 API Key
-              </button>
+              <button onClick={() => { setCoverMode('template'); setIsQuotaExceeded(false); }} className="w-full py-3 bg-gray-900 text-white font-bold rounded-xl">切换到模板模式</button>
+              <button onClick={handleSelectPersonalKey} className="w-full py-3 bg-red-500 text-white font-bold rounded-xl">更换 API 密钥</button>
             </div>
-            
-            <button 
-              onClick={() => setIsQuotaExceeded(false)}
-              className="w-full mt-3 py-3 text-gray-400 text-sm font-medium"
-            >
-              稍后再说
-            </button>
           </div>
         </div>
       )}
