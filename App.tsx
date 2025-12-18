@@ -4,7 +4,6 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
-import { Key, ShieldAlert } from 'lucide-react';
 
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
@@ -23,7 +22,6 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [showAuthModal, setShowAuthModal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
@@ -41,24 +39,6 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const handleOpenKeySelector = async () => {
-    const aistudio = (window as any).aistudio;
-    // 增加兼容性判断
-    if (aistudio && typeof aistudio.openSelectKey === 'function') {
-      try {
-        await aistudio.openSelectKey();
-        setShowAuthModal(false);
-        setError('');
-        if (topic) handleGenerate();
-      } catch (e) {
-        console.error("Key selector error", e);
-      }
-    } else {
-      // 如果无法打开官方弹窗，提示用户尝试刷新或检查网络
-      setError("无法连接授权模块，请尝试刷新页面。");
-    }
-  };
-
   const handleGenerate = async () => {
     if (!topic) {
       setError('请输入笔记话题');
@@ -68,18 +48,20 @@ const App: React.FC = () => {
     setLoading(true);
     setProgress(5);
     setError('');
+    setGeneratedData(null);
+    setGeneratedImage(null);
     
-    const progressSpeed = length === 'long' ? 150 : 300;
     const progInt = setInterval(() => {
-      setProgress(p => (p >= 95 ? p : p + (p < 50 ? 5 : 1)));
-    }, progressSpeed);
+      setProgress(p => (p >= 95 ? p : p + (p < 40 ? 4 : 1)));
+    }, 200);
 
     try {
-      // 默认尝试使用系统部署的 API_KEY 生成
+      // 1. 调用文案生成（直接使用 Vercel 注入的共享 Key）
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(60);
 
+      // 2. 处理封面逻辑
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -96,12 +78,12 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("Generate Flow Error:", err);
-      // 只有在明确失败且原因是鉴权时才显示 Modal
-      if (err.message === "AUTH_FAILED") {
-        setShowAuthModal(true);
+      console.error("Generate Error:", err);
+      // 处理具体的 API 错误
+      if (err.message?.includes('API key not valid')) {
+        setError('系统配置错误：API 密钥失效，请联系管理员。');
       } else {
-        setError(err.message || '生成失败，请重试');
+        setError('生成请求失败，请稍后刷新重试。');
       }
       setLoading(false);
     } finally {
@@ -146,30 +128,6 @@ const App: React.FC = () => {
         }}
         onCopyCover={() => {}} onDownloadCover={() => {}}
       />
-
-      {showAuthModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fadeIn">
-          <div className="bg-white rounded-[32px] p-10 max-w-md w-full shadow-2xl text-center">
-            <div className="w-20 h-20 bg-orange-50 rounded-full flex items-center justify-center mb-6 mx-auto">
-              <ShieldAlert className="w-10 h-10 text-orange-500" />
-            </div>
-            <h2 className="text-2xl font-bold mb-3 text-gray-900">需连接您的 API 密钥</h2>
-            <p className="text-gray-500 mb-8 leading-relaxed">
-              内置的共享额度已耗尽或失效。请连接您自己的 Google Gemini API 密钥以继续生成。
-            </p>
-            <button 
-              onClick={handleOpenKeySelector}
-              className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl"
-            >
-              <Key size={20} />
-              立即连接个人密钥
-            </button>
-            <div className="mt-6">
-               <button onClick={() => setShowAuthModal(false)} className="text-sm text-gray-400">取消</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
