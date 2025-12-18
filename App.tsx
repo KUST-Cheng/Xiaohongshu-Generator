@@ -4,7 +4,6 @@ import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
-import { Key, AlertCircle, RefreshCcw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
@@ -23,7 +22,6 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [needsKey, setNeedsKey] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
@@ -33,41 +31,17 @@ const App: React.FC = () => {
     setMemoData({
       date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      location: '创作灵感空间',
+      location: '灵感研究所',
       title: '在这里生成你的\n第一篇爆款笔记',
       highlight: 'AI 赋能，灵感爆发',
-      body: '好的内容需要好的排版。',
+      body: '好的内容需要好的排版。\n\n尝试在左侧输入一个话题，让我们开始创作吧！',
       footer: 'Xiaohongshu Generator'
     });
   }, []);
 
-  const handleOpenKeySelector = async () => {
-    const aistudio = (window as any).aistudio;
-    if (aistudio && typeof aistudio.openSelectKey === 'function') {
-      try {
-        await aistudio.openSelectKey();
-        setNeedsKey(false);
-        setError('');
-        // 连接成功后如果已经有话题，自动尝试生成
-        if (topic) handleGenerate();
-      } catch (e) {
-        console.error("Failed to open key selector:", e);
-        setError("无法打开密钥选择器，请检查浏览器是否拦截了弹窗。");
-      }
-    } else {
-      setError("当前环境不支持密钥选择，请确保在 AI Studio 中运行或正确配置 API_KEY。");
-    }
-  };
-
   const handleGenerate = async () => {
     if (!topic) {
       setError('请输入笔记话题');
-      return;
-    }
-
-    // 预检 API_KEY
-    if (!process.env.API_KEY) {
-      setNeedsKey(true);
       return;
     }
 
@@ -80,8 +54,7 @@ const App: React.FC = () => {
     const progInt = setInterval(() => {
       setProgress(p => {
         if (p >= 95) return p;
-        const inc = p < 50 ? 3 : 0.5;
-        return p + inc;
+        return p + (p < 50 ? 3 : 0.5);
       });
     }, 150);
 
@@ -91,7 +64,7 @@ const App: React.FC = () => {
       setGeneratedData(postData);
       setProgress(60);
 
-      // 2. 处理封面
+      // 2. 生成封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -108,11 +81,11 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("App Flow Error:", err);
-      if (err.message === "API_KEY_MISSING" || err.message === "API_KEY_INVALID") {
-        setNeedsKey(true);
+      console.error("Generation failed:", err);
+      if (err.message === "AUTH_FAILED") {
+        setError("系统配置错误：API 密钥无效或未设置，请检查环境变量配置。");
       } else {
-        setError(err.message || '系统忙，请稍后再试');
+        setError(err.message || '生成失败，请重试');
       }
       setLoading(false);
     } finally {
@@ -157,38 +130,6 @@ const App: React.FC = () => {
         }}
         onCopyCover={() => {}} onDownloadCover={() => {}}
       />
-
-      {/* 增强型授权引导弹窗 */}
-      {needsKey && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
-          <div className="bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl text-center border border-gray-100">
-            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-6 mx-auto">
-              <Key className="w-8 h-8 text-red-500" />
-            </div>
-            <h2 className="text-xl font-bold mb-3">连接服务</h2>
-            <p className="text-gray-500 text-sm mb-8 leading-relaxed">
-              为了确保持续提供生成服务，请点击下方按钮完成环境连接（如果您是管理员，请检查环境变量配置）。
-            </p>
-            <div className="space-y-3">
-              <button 
-                onClick={handleOpenKeySelector}
-                className="w-full py-4 bg-red-500 hover:bg-red-600 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95"
-              >
-                <Key size={18} />
-                立即连接
-              </button>
-              <button 
-                onClick={() => window.location.reload()}
-                className="w-full py-3 bg-gray-50 text-gray-500 text-sm rounded-2xl flex items-center justify-center gap-2 hover:bg-gray-100 transition-all"
-              >
-                <RefreshCcw size={14} />
-                刷新页面
-              </button>
-            </div>
-            {error && <p className="mt-4 text-xs text-red-500 font-medium">{error}</p>}
-          </div>
-        </div>
-      )}
     </div>
   );
 };
