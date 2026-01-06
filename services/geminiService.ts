@@ -9,6 +9,7 @@ const PROXY_DOMAIN = "https://yunwu.ai";
 
 /**
  * Robust Fetch Interceptor Guard
+ * Prevents multiple wrappings and handles all Request/URL/String variants correctly.
  */
 if (!(window as any).__FETCH_HIJACKED__) {
   const originalFetch = window.fetch;
@@ -27,6 +28,8 @@ if (!(window as any).__FETCH_HIJACKED__) {
 
     if (url.includes(targetDomain)) {
       const newUrl = url.replace(`https://${targetDomain}`, PROXY_DOMAIN);
+      
+      // If it's a Request object, we must clone it for the new URL
       if (resource instanceof Request) {
         const { method, headers, body, mode, credentials, cache, redirect, referrer, integrity, signal } = resource;
         const newRequest = new Request(newUrl, {
@@ -34,41 +37,14 @@ if (!(window as any).__FETCH_HIJACKED__) {
         });
         return originalFetch(newRequest);
       }
+      
       return originalFetch(newUrl, config);
     }
+
     return originalFetch(resource, config);
   };
   (window as any).__FETCH_HIJACKED__ = true;
 }
-
-/**
- * Utility to extract and parse JSON safely from potentially messy AI output
- */
-const parseSafeJson = (text: string) => {
-  try {
-    // 1. Clean markdown code blocks if present
-    let cleaned = text.trim();
-    if (cleaned.startsWith('```')) {
-      cleaned = cleaned.replace(/^```(?:json)?/, '').replace(/```$/, '').trim();
-    }
-    
-    // 2. Find the first '{' and last '}' to isolate the JSON object
-    const startIdx = cleaned.indexOf('{');
-    const endIdx = cleaned.lastIndexOf('}');
-    
-    if (startIdx === -1 || endIdx === -1) {
-      throw new Error("No JSON object found");
-    }
-    
-    cleaned = cleaned.substring(startIdx, endIdx + 1);
-    
-    // 3. Attempt parse
-    return JSON.parse(cleaned);
-  } catch (e) {
-    console.error("Original text was:", text);
-    throw e;
-  }
-};
 
 /**
  * Utility to compress and resize images
@@ -109,7 +85,9 @@ const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string
 const sanitizeContent = (text: string): string => {
   if (!text) return "";
   return text
+    // Remove "key": or key: patterns at the start of strings
     .replace(/^["']?[\w_]+["']?\s*[:：]\s*/i, '')
+    // Remove any trailing quotes if AI accidentally wrapped the value
     .replace(/^["']|["']$/g, '')
     .trim();
 };
@@ -127,34 +105,35 @@ export const generatePostText = async (
   const ai = new GoogleGenAI({ apiKey });
   
   const lengthStrategy = length === 'long' 
-    ? "字数：约600-800字。包含详细的小红书式排版。" 
-    : (length === 'short' ? "字数：150字左右。短小精悍。" : "字数：350字左右。标准篇幅。");
+    ? "字数要求：约800字左右。结构完整，包含开头、详细干货/经历、总结。禁止生成超过4000字符的废话。" 
+    : (length === 'short' ? "字数要求：200字以内。短小精悍，核心卖点明确。" : "字数要求：400字左右。中规中矩，排版美观。");
 
   const prompt = `
-    你是一位资深的小红书爆款博主。请针对话题“${topic}”，以“${style}”风格创作。
+    你是一位资深的小红书爆款博主。针对话题“${topic}”，创作一篇风格为“${style}”的爆款笔记。
     
-    【核心要求】:
-    1. 标题吸睛带Emoji。
-    2. 正文分段，多用表情符号。
+    【核心任务】:
+    1. 标题必须有点击欲望，包含 Emoji。
+    2. 正文使用分段式排版，多用表情符号，增加易读性。
     3. ${lengthStrategy}
     
     ${isTemplateMode ? `
-    【爆款模版提取要求】:
-    必须提取 3 个极简文本字段用于 iOS 备忘录封面：
-    - main_title: 极其震撼的主标题（10字内）。
-    - highlight_text: 点睛金句（15字内）。
-    - body_preview: 吸引点击的内容摘要（40字内）。
-    注意：值必须是纯文本，严禁带有任何 JSON 键名或标点。
+    【爆款模版特殊提取】:
+    请同步提取 3 个极简字段用于封面：
+    - main_title: 极其震撼的笔记主标题（不超过10字）。
+    - highlight_text: 一句点睛之笔或金句（不超过15字）。
+    - body_preview: 最吸引人的正文预览（不超过40字）。
+    注意：值必须是纯文本，严禁包含任何代码格式、JSON 键名或标点。
     ` : ''}
 
-    【输出格式】: 严格返回 JSON 格式。不要输出任何 JSON 之外的文字。
+    【格式要求】: 严格返回 JSON。
   `;
 
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
     contents: prompt,
     config: {
-      maxOutputTokens: 1500, // 限制输出长度，防止截断
+      // 移除 thinkingBudget 以免干扰输出 Token 限制，并防止生成超长非预期内容
+      maxOutputTokens: 2048,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -178,12 +157,12 @@ export const generatePostText = async (
   });
 
   const text = response.text;
-  if (!text) throw new Error("AI 生成失败，请缩短话题后重试");
+  if (!text) throw new Error("AI 生成的内容由于过长或安全策略被截断，请尝试缩短话题或重试");
   
   try {
-    const data = parseSafeJson(text) as GeneratedPost;
+    const data = JSON.parse(text) as GeneratedPost;
     
-    // 清洗数据
+    // 再次清洗数据，确保没有 JSON 键名混入
     data.title = sanitizeContent(data.title);
     if (data.cover_summary) {
       data.cover_summary.main_title = sanitizeContent(data.cover_summary.main_title);
@@ -193,8 +172,8 @@ export const generatePostText = async (
     
     return data;
   } catch (e) {
-    console.warn("JSON Parse Attempt Failed. Raw text length:", text.length);
-    throw new Error("生成内容过于丰富导致格式受损，请再次点击生成即可恢复。建议缩短话题长度。");
+    console.error("JSON Parse Error. Full Text:", text);
+    throw new Error("内容解析失败，可能是由于 AI 生成的内容过长导致截断。请再点一次生成，通常即可恢复正常。");
   }
 };
 
@@ -219,11 +198,11 @@ export const generatePostImage = async (
       } 
     });
     parts.push({ 
-      text: `Create a Xiaohongshu cover style image for topic: ${topic}. Use the visual style of the reference image. 3:4 aspect ratio. NO TEXT.` 
+      text: `Task: Create a social media cover image (Xiaohongshu style). Topic: ${topic}. Inspiration: Use the lighting and aesthetic style of the provided reference image. Aspect ratio 3:4. NO TEXT.` 
     });
   } else {
     parts.push({ 
-      text: `High-end photography for Xiaohongshu. Topic: ${topic}, Style: ${style}. Cinematic lighting, 3:4 aspect ratio, NO TEXT.` 
+      text: `Professional aesthetic photography for Xiaohongshu cover. Topic: ${topic}, Style: ${style}. High definition, cinematic lighting, 3:4 aspect ratio, NO TEXT.` 
     });
   }
 
@@ -247,7 +226,7 @@ export const generatePostImage = async (
     }
   }
   
-  throw new Error("图像生成遇到问题，请重试。");
+  throw new Error("图像生成遇到问题，请重新点击生成。");
 };
 
 /**
@@ -260,7 +239,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
   
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
-    contents: `针对话题“${topic}”，给出5个差异化小红书标题。直接返回 JSON 数组。`,
+    contents: `针对话题“${topic}”，给出5个小红书风格标题。返回 JSON 字符串数组。`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -270,7 +249,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
     }
   });
   try {
-    return parseSafeJson(response.text || "[]");
+    return JSON.parse(response.text || "[]");
   } catch {
     return [];
   }
