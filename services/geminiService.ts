@@ -3,30 +3,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 核心逻辑：直接使用注入的 process.env.API_KEY
- * 按照规范，在每次调用前即时实例化 GoogleGenAI，确保获取最新的授权状态。
+ * 按照规范，在每次调用前即时实例化 GoogleGenAI。
+ * 环境变量 API_KEY 必须在部署环境中配置。
  */
 const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new Error("AUTH_MISSING");
-  }
-  return new GoogleGenAI({ apiKey });
-};
-
-/**
- * 处理 API 错误并返回可读性强的错误标识
- */
-const handleApiError = (error: any) => {
-  const msg = error?.message || "";
-  console.error("Gemini API Error:", error);
-
-  if (msg.includes("429") || msg.includes("quota")) return "QUOTA_EXCEEDED";
-  if (msg.includes("401") || msg.includes("invalid")) return "AUTH_INVALID";
-  if (msg.includes("403")) return "PERMISSION_DENIED";
-  if (msg.includes("entity was not found")) return "AUTH_NEED_RESET";
-  
-  return msg || "UNKNOWN_ERROR";
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
 export const generatePostText = async (
@@ -62,7 +43,7 @@ export const generatePostText = async (
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 32768 }, // 旗舰模型启用深度思考
+        thinkingConfig: { thinkingBudget: 32768 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -86,10 +67,11 @@ export const generatePostText = async (
     });
 
     const text = response.text;
-    if (!text) throw new Error("AI_EMPTY_RESPONSE");
+    if (!text) throw new Error("AI 未返回有效内容");
     return JSON.parse(text);
   } catch (error: any) {
-    throw new Error(handleApiError(error));
+    console.error("Text Generation Error:", error);
+    throw new Error(error.message || "文案生成失败，请检查 API 配置");
   }
 };
 
@@ -134,14 +116,10 @@ export const generatePostImage = async (
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    throw new Error("IMAGE_MISSING");
+    throw new Error("图片生成未返回数据");
   } catch (error: any) {
-    const errorCode = handleApiError(error);
-    // 如果是严重的认证错误，则抛出以便 App.tsx 拦截
-    if (["AUTH_INVALID", "AUTH_NEED_RESET", "PERMISSION_DENIED"].includes(errorCode)) {
-        throw new Error(errorCode);
-    }
-    // 否则降级使用公共生成器
+    console.error("Image Generation Error:", error);
+    // 降级至公共生成器以确保用户体验
     return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + ", aesthetic style")}?width=1080&height=1440&nologo=true`;
   }
 };
