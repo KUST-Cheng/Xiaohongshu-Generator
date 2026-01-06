@@ -32,8 +32,6 @@ if (!(window as any).__FETCH_HIJACKED__) {
       // If it's a Request object, we must clone it for the new URL
       if (resource instanceof Request) {
         const { method, headers, body, mode, credentials, cache, redirect, referrer, integrity, signal } = resource;
-        // Note: body cannot be reused easily if it's a stream, 
-        // but for standard SDK calls it works fine.
         const newRequest = new Request(newUrl, {
           method, headers, body, mode, credentials, cache, redirect, referrer, integrity, signal
         });
@@ -77,6 +75,7 @@ const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string
       const compressed = canvas.toDataURL('image/jpeg', 0.7);
       resolve(compressed.split(',')[1]);
     };
+    img.onerror = () => resolve(base64Str);
   });
 };
 
@@ -106,36 +105,35 @@ export const generatePostText = async (
   const ai = new GoogleGenAI({ apiKey });
   
   const lengthStrategy = length === 'long' 
-    ? "这是一篇深度长文（约800字），需要清晰的逻辑结构、丰富的细节和多级副标题。" 
-    : (length === 'short' ? "短小精悍，控制在200字以内，重点突出。" : "中等篇幅，400字左右，排版舒适。");
+    ? "字数要求：约800字左右。结构完整，包含开头、详细干货/经历、总结。禁止生成超过4000字符的废话。" 
+    : (length === 'short' ? "字数要求：200字以内。短小精悍，核心卖点明确。" : "字数要求：400字左右。中规中矩，排版美观。");
 
   const prompt = `
-    你是一位拥有千万粉丝的小红书爆款博主。针对话题“${topic}”，创作一篇风格为“${style}”的爆款笔记。
-    【核心要求】: 
-    1. 标题吸睛，多用 Emoji。
-    2. 正文排版要有呼吸感。
-    3. 严禁在生成的文字内容中包含任何 JSON 字段名、变量名或代码标记（如 "title": 等）。
+    你是一位资深的小红书爆款博主。针对话题“${topic}”，创作一篇风格为“${style}”的爆款笔记。
     
-    【篇幅策略】: ${lengthStrategy}
+    【核心任务】:
+    1. 标题必须有点击欲望，包含 Emoji。
+    2. 正文使用分段式排版，多用表情符号，增加易读性。
+    3. ${lengthStrategy}
     
     ${isTemplateMode ? `
-    【爆款模版生成指令】:
-    请为 iOS 备忘录封面提取关键摘要。
-    - main_title: 核心大标题（3-10字）。
-    - highlight_text: 高亮痛点或金句（15字内）。
-    - body_preview: 吸引点击的精彩预览（40字内）。
-    注意：这些字段的值必须是纯文字，绝对不能带有任何冒号、引号或字段名称。
+    【爆款模版特殊提取】:
+    请同步提取 3 个极简字段用于封面：
+    - main_title: 极其震撼的笔记主标题（不超过10字）。
+    - highlight_text: 一句点睛之笔或金句（不超过15字）。
+    - body_preview: 最吸引人的正文预览（不超过40字）。
+    注意：值必须是纯文本，严禁包含任何代码格式、JSON 键名或标点。
     ` : ''}
-    
-    必须返回 JSON 格式。
+
+    【格式要求】: 严格返回 JSON。
   `;
 
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
     contents: prompt,
     config: {
-      // Reduced thinking budget slightly to avoid proxy timeouts on repeated calls
-      thinkingConfig: { thinkingBudget: 8000 },
+      // 移除 thinkingBudget 以免干扰输出 Token 限制，并防止生成超长非预期内容
+      maxOutputTokens: 2048,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -159,19 +157,24 @@ export const generatePostText = async (
   });
 
   const text = response.text;
-  if (!text) throw new Error("AI 返回内容为空，请再次点击生成");
+  if (!text) throw new Error("AI 生成的内容由于过长或安全策略被截断，请尝试缩短话题或重试");
   
-  const data = JSON.parse(text) as GeneratedPost;
-  
-  // Sanitize all output fields
-  data.title = sanitizeContent(data.title);
-  if (data.cover_summary) {
-    data.cover_summary.main_title = sanitizeContent(data.cover_summary.main_title);
-    data.cover_summary.highlight_text = sanitizeContent(data.cover_summary.highlight_text);
-    data.cover_summary.body_preview = sanitizeContent(data.cover_summary.body_preview);
+  try {
+    const data = JSON.parse(text) as GeneratedPost;
+    
+    // 再次清洗数据，确保没有 JSON 键名混入
+    data.title = sanitizeContent(data.title);
+    if (data.cover_summary) {
+      data.cover_summary.main_title = sanitizeContent(data.cover_summary.main_title);
+      data.cover_summary.highlight_text = sanitizeContent(data.cover_summary.highlight_text);
+      data.cover_summary.body_preview = sanitizeContent(data.cover_summary.body_preview);
+    }
+    
+    return data;
+  } catch (e) {
+    console.error("JSON Parse Error. Full Text:", text);
+    throw new Error("内容解析失败，可能是由于 AI 生成的内容过长导致截断。请再点一次生成，通常即可恢复正常。");
   }
-  
-  return data;
 };
 
 /**
@@ -195,11 +198,11 @@ export const generatePostImage = async (
       } 
     });
     parts.push({ 
-      text: `Generate a new Xiaohongshu cover inspired by the style of this image. Topic: ${topic}. High-end photography, cinematic, 3:4 aspect ratio. NO TEXT.` 
+      text: `Task: Create a social media cover image (Xiaohongshu style). Topic: ${topic}. Inspiration: Use the lighting and aesthetic style of the provided reference image. Aspect ratio 3:4. NO TEXT.` 
     });
   } else {
     parts.push({ 
-      text: `Aesthetic Xiaohongshu cover photography, topic: ${topic}, style: ${style}. High quality, 3:4 aspect ratio, NO TEXT.` 
+      text: `Professional aesthetic photography for Xiaohongshu cover. Topic: ${topic}, Style: ${style}. High definition, cinematic lighting, 3:4 aspect ratio, NO TEXT.` 
     });
   }
 
@@ -223,7 +226,7 @@ export const generatePostImage = async (
     }
   }
   
-  throw new Error("图像生成遇到问题，请重试");
+  throw new Error("图像生成遇到问题，请重新点击生成。");
 };
 
 /**
@@ -236,7 +239,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
   
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
-    contents: `针对话题“${topic}”，给出5个小红书风格标题。返回 JSON 数组。`,
+    contents: `针对话题“${topic}”，给出5个小红书风格标题。返回 JSON 字符串数组。`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -245,5 +248,9 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
       }
     }
   });
-  return JSON.parse(response.text || "[]");
+  try {
+    return JSON.parse(response.text || "[]");
+  } catch {
+    return [];
+  }
 };
