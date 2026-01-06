@@ -4,14 +4,16 @@ import { GeneratedPost } from "../types";
 
 /**
  * 按照规范，在每次调用前即时实例化 GoogleGenAI。
- * 环境变量 API_KEY 必须在部署环境（如 Vercel Dashboard）中配置。
  */
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API_KEY_MISSING");
   }
-  return new GoogleGenAI({ apiKey });
+  // The @google/genai SDK options only support 'apiKey'. Custom baseUrls are not supported.
+  return new GoogleGenAI({ 
+    apiKey
+  });
 };
 
 export const generatePostText = async (
@@ -47,7 +49,7 @@ export const generatePostText = async (
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 24576 },
+        thinkingConfig: { thinkingBudget: 32768 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -70,13 +72,14 @@ export const generatePostText = async (
       },
     });
 
+    // Extracting text using the .text property (not a method)
     const text = response.text;
     if (!text) throw new Error("AI 未返回内容");
     return JSON.parse(text);
   } catch (error: any) {
     console.error("Text Gen Error:", error);
     if (error.message === "API_KEY_MISSING") throw error;
-    throw new Error("生成文案失败，请稍后重试");
+    throw new Error("文案生成失败: " + (error.message || "服务连接异常，请检查网络或密钥权限"));
   }
 };
 
@@ -104,20 +107,24 @@ export const generatePostImage = async (
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image', // 切换到 Flash 图像模型以避开浏览器的用户 Key 授权强制要求
+      model: 'gemini-3-pro-image-preview', 
       contents: { parts },
       config: {
-        imageConfig: { aspectRatio: "3:4" }
+        imageConfig: { 
+          aspectRatio: "3:4",
+          imageSize: "1K"
+        }
       }
     });
 
+    // Iterate through parts to find the image part correctly
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
     }
-    throw new Error("Image missing in response");
+    throw new Error("图片生成未返回有效数据");
   } catch (error: any) {
     console.error("Image Gen Error:", error);
-    // 降级方案
+    // Fallback generator if the premium model fails
     return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + " style aesthetic")}?width=1080&height=1440&nologo=true`;
   }
 };
@@ -134,6 +141,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
         responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
       }
     });
+    // Extracting text from the .text property
     return JSON.parse(response.text || "[]");
   } catch (e) {
     return [];
