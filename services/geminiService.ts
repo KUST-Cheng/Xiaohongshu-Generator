@@ -8,20 +8,24 @@ const IMAGE_FREE_KEY = "sk-nBYh0WMJ0EBAxJQzpAtgG0j5G0xB8dEh09PowC5ZESx6qy7G";
 const PROXY_DOMAIN = "https://yunwu.ai";
 
 /**
- * 核心修复：劫持 fetch 请求。
- * @google/genai SDK 内部使用 fetch。通过替换 URL 域名，
- * 强制让 SDK 与中转站通信，从而使 sk-... 格式的密钥生效。
+ * 强化版 Fetch 劫持：
+ * 确保完整转发所有参数，包括大容量的图片数据和特殊的请求头。
  */
 const originalFetch = window.fetch;
-window.fetch = function(...args: any[]) {
-  if (typeof args[0] === 'string' && args[0].includes('generativelanguage.googleapis.com')) {
-    args[0] = args[0].replace('https://generativelanguage.googleapis.com', PROXY_DOMAIN);
+window.fetch = async function(...args: any[]) {
+  let [resource, config] = args;
+  
+  if (typeof resource === 'string' && resource.includes('generativelanguage.googleapis.com')) {
+    resource = resource.replace('https://generativelanguage.googleapis.com', PROXY_DOMAIN);
+  } else if (resource instanceof URL && resource.href.includes('generativelanguage.googleapis.com')) {
+    resource = new URL(resource.href.replace('https://generativelanguage.googleapis.com', PROXY_DOMAIN));
   }
-  return originalFetch.apply(this, args as any);
+
+  return originalFetch(resource, config);
 };
 
 /**
- * 生成爆款文案 - 使用专用文案密钥
+ * 生成爆款文案
  */
 export const generatePostText = async (
   topic: string,
@@ -29,7 +33,6 @@ export const generatePostText = async (
   length: string,
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
-  // 优先使用环境变量，否则使用提供的免费文案密钥
   const apiKey = process.env.API_KEY || TEXT_FREE_KEY;
   const ai = new GoogleGenAI({ apiKey });
   
@@ -41,7 +44,15 @@ export const generatePostText = async (
     你是一位拥有千万粉丝的小红书爆款博主。针对话题“${topic}”，创作一篇风格为“${style}”的爆款笔记。
     【创作要求】: 标题带 Emoji，正文有呼吸感，多用表情，结尾带 5-8 个标签。
     【篇幅策略】: ${lengthStrategy}
-    ${isTemplateMode ? '同时提取封面摘要：main_title (封面主标题), highlight_text (高亮金句), body_preview (正文预览)。' : ''}
+    
+    ${isTemplateMode ? `
+    【特别指令 - 封面摘要】: 
+    请为 iOS 备忘录模版生成摘要内容。
+    - main_title: 极其吸睛的笔记主标题（3-8字）。
+    - highlight_text: 一句有力的话或痛点金句（15字以内）。
+    - body_preview: 正文的核心精华预览（30-50字）。
+    注意：摘要内容必须是地道、感性的中文，严禁出现任何 JSON 键名（如 "main_title"）、技术术语、英文描述或类似代码的字符。
+    ` : ''}
     
     必须以纯 JSON 格式返回。
   `;
@@ -75,11 +86,23 @@ export const generatePostText = async (
 
   const text = response.text;
   if (!text) throw new Error("AI 返回文案为空，请重试");
-  return JSON.parse(text);
+  
+  // 简单清洗，防止 AI 在字段中混入多余的引导词
+  const data = JSON.parse(text) as GeneratedPost;
+  if (data.cover_summary) {
+    Object.keys(data.cover_summary).forEach(key => {
+        const k = key as keyof typeof data.cover_summary;
+        if (data.cover_summary![k]) {
+            data.cover_summary![k] = data.cover_summary![k].replace(/^(main_title|highlight_text|body_preview)[:：\s]*/i, '');
+        }
+    });
+  }
+  
+  return data;
 };
 
 /**
- * 生成爆款封面 - 使用专用图片密钥
+ * 生成爆款封面
  */
 export const generatePostImage = async (
   topic: string,
@@ -91,6 +114,7 @@ export const generatePostImage = async (
   
   const parts: any[] = [];
   if (refImageBase64) {
+    // 确保图片部分在 Prompt 之前，有助于模型理解参考关系
     parts.push({ 
       inlineData: { 
         mimeType: 'image/png', 
@@ -98,7 +122,10 @@ export const generatePostImage = async (
       } 
     });
     parts.push({ 
-      text: `参考此图的审美风格、构图和色调，为“${topic}”生成一张小红书高审美封面图。画面严禁出现文字。` 
+      text: `Task: Generate a new aesthetic cover for Xiaohongshu. 
+      Topic: ${topic}. 
+      Reference: Use the provided image for composition, lighting, and color palette inspiration. 
+      Requirement: Professional photography, NO text on image, 3:4 aspect ratio, high definition.` 
     });
   } else {
     parts.push({ 
@@ -123,7 +150,7 @@ export const generatePostImage = async (
     }
   }
   
-  throw new Error("图像模型未返回有效数据");
+  throw new Error("图像模型生成超时或未返回数据，请检查网络或重试");
 };
 
 /**
