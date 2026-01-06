@@ -14,7 +14,7 @@ declare global {
 }
 
 const App: React.FC = () => {
-  // State for content
+  // 状态定义
   const [topic, setTopic] = useState('');
   const [style, setStyle] = useState<StyleType>('emotional');
   const [length, setLength] = useState<LengthType>('medium');
@@ -23,7 +23,6 @@ const App: React.FC = () => {
     date: '', time: '', location: '', title: '', highlight: '', body: '', footer: ''
   });
 
-  // State for references and generation results
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [referenceImageRaw, setReferenceImageRaw] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,15 +32,14 @@ const App: React.FC = () => {
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
   
-  // API Key State
-  const [hasCheckedKey, setHasCheckedKey] = useState(false);
-  const [isAuthorized, setIsAuthorized] = useState(false);
+  // 密钥授权状态 - 默认设为 true，因为服务层已提供内置 Key
+  const [isAuthorized, setIsAuthorized] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // 1. Initial template setup
+    // 初始化模板数据
     const now = new Date();
     setMemoData({
       date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
@@ -52,34 +50,6 @@ const App: React.FC = () => {
       body: '好的内容需要好的排版。\n\n尝试在左侧输入一个话题，让我们开始创作吧！',
       footer: 'RedNote Generator'
     });
-
-    // 2. Check for API Key
-    const initAuth = async () => {
-      // Check if a key is already injected
-      const envKey = process.env.API_KEY;
-      if (envKey && envKey.length > 5) {
-        setIsAuthorized(true);
-        setHasCheckedKey(true);
-        return;
-      }
-
-      // Check aistudio bridge
-      if (window.aistudio) {
-        try {
-          const hasKey = await window.aistudio.hasSelectedApiKey();
-          setIsAuthorized(hasKey);
-        } catch (e) {
-          console.warn("Auth check failed", e);
-        }
-      } else {
-        // Since we have hardcoded fallback keys in geminiService, 
-        // we can set isAuthorized to true by default for a seamless experience
-        setIsAuthorized(true);
-      }
-      setHasCheckedKey(true);
-    };
-    
-    initAuth();
   }, []);
 
   const handleOpenKeySelector = async () => {
@@ -106,12 +76,12 @@ const App: React.FC = () => {
     }, 200);
 
     try {
-      // 1. Generate Text content
+      // 1. 生成文案
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(60);
 
-      // 2. Generate Cover (AI Image or Template sync)
+      // 2. 生成封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -130,13 +100,14 @@ const App: React.FC = () => {
     } catch (err: any) {
       console.error("Workflow Error:", err);
       
-      if (err.message?.includes("Requested entity was not found")) {
-        setError("API 密钥无效或未找到，请点击下方重新关联密钥。");
+      // 如果出现密钥错误，引导用户
+      if (err.message?.includes("API key not valid") || err.message?.includes("INVALID_ARGUMENT")) {
+        setError("当前免费接口压力较大或密钥失效，请尝试点击下方“关联密钥”使用您自己的 Key。");
         setIsAuthorized(false); 
-      } else if (err.message?.includes("quota")) {
-        setError("API 调用配额已用完，请检查您的 Google Cloud 计费账号。");
+      } else if (err.message?.includes("quota") || err.message?.includes("429")) {
+        setError("当前接口请求过于频繁，请稍后再试或切换到您的个人 Key。");
       } else {
-        setError(err.message || "生成失败，请重试");
+        setError(err.message || "生成失败，请检查网络后重试");
       }
       setLoading(false);
     } finally {
@@ -145,24 +116,16 @@ const App: React.FC = () => {
     }
   };
 
-  if (!hasCheckedKey) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-gray-50">
-        <Loader2 className="w-8 h-8 text-red-500 animate-spin" />
-      </div>
-    );
-  }
-
-  // Mandatory check view if no key and bridge exists
+  // 如果被判定未授权（通常是报错后），显示授权引导
   if (!isAuthorized) {
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center bg-white p-6">
         <div className="w-20 h-20 bg-red-500 rounded-3xl flex items-center justify-center text-white mb-8 shadow-2xl animate-bounce">
           <Sparkles size={40} />
         </div>
-        <h1 className="text-3xl font-black text-gray-900 mb-4 text-center">开启灵感之门</h1>
+        <h1 className="text-3xl font-black text-gray-900 mb-4 text-center">API 密钥需要更新</h1>
         <p className="text-gray-500 text-center max-w-sm mb-10 leading-relaxed font-medium">
-          请关联您的 API 密钥以继续使用。
+          内置免费密钥可能已失效或超出限额。您可以关联自己的 Google AI 密钥以继续享受无限次生成体验。
         </p>
         
         <div className="flex flex-col gap-4 w-full max-w-xs">
@@ -171,18 +134,15 @@ const App: React.FC = () => {
             className="flex items-center justify-center gap-3 bg-gray-900 text-white py-4 rounded-2xl font-bold shadow-xl hover:bg-black transition-all active:scale-95"
           >
             <Key size={20} />
-            关联 API 密钥
+            关联个人 API 密钥
           </button>
           
-          <a 
-            href="https://ai.google.dev/gemini-api/docs/billing" 
-            target="_blank" 
-            rel="noreferrer"
-            className="flex items-center justify-center gap-2 text-xs text-blue-500 font-bold hover:underline py-2"
+          <button 
+            onClick={() => setIsAuthorized(true)}
+            className="text-sm text-gray-400 font-bold hover:text-red-500 transition-colors"
           >
-            <ExternalLink size={14} />
-            查看计费说明文档
-          </a>
+            继续尝试使用内置密钥
+          </button>
         </div>
       </div>
     );
@@ -227,11 +187,5 @@ const App: React.FC = () => {
     </div>
   );
 };
-
-const Loader2 = ({ className, size }: { className?: string, size?: number }) => (
-  <svg className={className} width={size || 24} height={size || 24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-  </svg>
-);
 
 export default App;
