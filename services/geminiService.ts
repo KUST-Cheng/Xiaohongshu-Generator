@@ -9,7 +9,6 @@ const PROXY_DOMAIN = "https://yunwu.ai";
 
 /**
  * Robust Fetch Interceptor Guard
- * Prevents multiple wrappings and handles all Request/URL/String variants correctly.
  */
 if (!(window as any).__FETCH_HIJACKED__) {
   const originalFetch = window.fetch;
@@ -28,8 +27,6 @@ if (!(window as any).__FETCH_HIJACKED__) {
 
     if (url.includes(targetDomain)) {
       const newUrl = url.replace(`https://${targetDomain}`, PROXY_DOMAIN);
-      
-      // If it's a Request object, we must clone it for the new URL
       if (resource instanceof Request) {
         const { method, headers, body, mode, credentials, cache, redirect, referrer, integrity, signal } = resource;
         const newRequest = new Request(newUrl, {
@@ -37,14 +34,94 @@ if (!(window as any).__FETCH_HIJACKED__) {
         });
         return originalFetch(newRequest);
       }
-      
       return originalFetch(newUrl, config);
     }
-
     return originalFetch(resource, config);
   };
   (window as any).__FETCH_HIJACKED__ = true;
 }
+
+/**
+ * Aggressive JSON Repair Utility
+ * This function attempts to close any unclosed strings, objects, or arrays.
+ * Critical for long text generation which might be cut off mid-sentence.
+ */
+const tryRepairJson = (jsonStr: string): string => {
+  let repaired = jsonStr.trim();
+  
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < repaired.length; i++) {
+    const char = repaired[i];
+    if (char === '\\' && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' && !escaped) {
+      inString = !inString;
+    }
+    if (!inString) {
+      if (char === '{') openBraces++;
+      if (char === '}') openBraces--;
+      if (char === '[') openBrackets++;
+      if (char === ']') openBrackets--;
+    }
+    escaped = false;
+  }
+
+  // Close unclosed structures
+  if (inString) repaired += '"';
+  while (openBrackets > 0) { repaired += ']'; openBrackets--; }
+  while (openBraces > 0) { repaired += '}'; openBraces--; }
+
+  return repaired;
+};
+
+/**
+ * Intelligent JSON Extractor and Parser
+ */
+const parseSafeJson = (text: string) => {
+  let cleaned = text.trim();
+  
+  // Strip Markdown markers
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  
+  // Find the true JSON start
+  const startIdx = cleaned.indexOf('{');
+  const startBracketIdx = cleaned.indexOf('[');
+  
+  // Decide which structural element starts first
+  let targetStart = -1;
+  if (startIdx !== -1 && startBracketIdx !== -1) targetStart = Math.min(startIdx, startBracketIdx);
+  else if (startIdx !== -1) targetStart = startIdx;
+  else if (startBracketIdx !== -1) targetStart = startBracketIdx;
+
+  if (targetStart === -1) throw new Error("No valid JSON structure found in AI response.");
+
+  // Cut text to start from the first brace/bracket
+  let jsonCandidate = cleaned.substring(targetStart);
+  
+  // Find the last corresponding closing character
+  const isObject = jsonCandidate.startsWith('{');
+  const lastCloseIdx = isObject ? jsonCandidate.lastIndexOf('}') : jsonCandidate.lastIndexOf(']');
+
+  // If we have a closing tag, try parsing it directly first
+  if (lastCloseIdx !== -1) {
+    const fullJson = jsonCandidate.substring(0, lastCloseIdx + 1);
+    try {
+      return JSON.parse(fullJson);
+    } catch (e) {
+      // Fallback to repair if standard parse fails
+      return JSON.parse(tryRepairJson(fullJson));
+    }
+  }
+
+  // If no closing tag found at all (severe truncation), try repairing the whole remnant
+  return JSON.parse(tryRepairJson(jsonCandidate));
+};
 
 /**
  * Utility to compress and resize images
@@ -85,9 +162,7 @@ const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string
 const sanitizeContent = (text: string): string => {
   if (!text) return "";
   return text
-    // Remove "key": or key: patterns at the start of strings
     .replace(/^["']?[\w_]+["']?\s*[:：]\s*/i, '')
-    // Remove any trailing quotes if AI accidentally wrapped the value
     .replace(/^["']|["']$/g, '')
     .trim();
 };
@@ -105,35 +180,34 @@ export const generatePostText = async (
   const ai = new GoogleGenAI({ apiKey });
   
   const lengthStrategy = length === 'long' 
-    ? "字数要求：约800字左右。结构完整，包含开头、详细干货/经历、总结。禁止生成超过4000字符的废话。" 
-    : (length === 'short' ? "字数要求：200字以内。短小精悍，核心卖点明确。" : "字数要求：400字左右。中规中矩，排版美观。");
+    ? "字数要求：必须是深度长文，约800-1000字。内容要极其详实，多使用小红书式的列表排版和丰富的Emoji。" 
+    : (length === 'short' ? "字数要求：150字以内。短小精悍，爆点十足。" : "字数要求：约400字。中规中矩。");
 
   const prompt = `
-    你是一位资深的小红书爆款博主。针对话题“${topic}”，创作一篇风格为“${style}”的爆款笔记。
+    作为顶级小红书爆款博主，请针对“${topic}”创作一篇风格为“${style}”的笔记。
     
-    【核心任务】:
-    1. 标题必须有点击欲望，包含 Emoji。
-    2. 正文使用分段式排版，多用表情符号，增加易读性。
+    【核心质量标准】:
+    1. 标题必须有极强的点击欲望，带表情。
+    2. 正文分段明晰，每段加表情，逻辑顺滑。
     3. ${lengthStrategy}
     
     ${isTemplateMode ? `
-    【爆款模版特殊提取】:
-    请同步提取 3 个极简字段用于封面：
-    - main_title: 极其震撼的笔记主标题（不超过10字）。
-    - highlight_text: 一句点睛之笔或金句（不超过15字）。
-    - body_preview: 最吸引人的正文预览（不超过40字）。
-    注意：值必须是纯文本，严禁包含任何代码格式、JSON 键名或标点。
+    【封面数据提取】:
+    为iOS备忘录封面生成以下3个字段：
+    - main_title: 核心大标题（10字内）。
+    - highlight_text: 痛点或金句（15字内）。
+    - body_preview: 吸引人的内容摘要（40字内）。
     ` : ''}
 
-    【格式要求】: 严格返回 JSON。
+    【输出要求】:
+    严格返回 JSON 格式。确保 JSON 结构完整。
   `;
 
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
     contents: prompt,
     config: {
-      // 移除 thinkingBudget 以免干扰输出 Token 限制，并防止生成超长非预期内容
-      maxOutputTokens: 2048,
+      maxOutputTokens: 8192, // 极大提升 Token 上限，解决长文截断问题
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -157,12 +231,12 @@ export const generatePostText = async (
   });
 
   const text = response.text;
-  if (!text) throw new Error("AI 生成的内容由于过长或安全策略被截断，请尝试缩短话题或重试");
+  if (!text) throw new Error("AI未能正常生成内容，请尝试稍微缩短话题描述。");
   
   try {
-    const data = JSON.parse(text) as GeneratedPost;
+    const data = parseSafeJson(text) as GeneratedPost;
     
-    // 再次清洗数据，确保没有 JSON 键名混入
+    // Final check and sanitization
     data.title = sanitizeContent(data.title);
     if (data.cover_summary) {
       data.cover_summary.main_title = sanitizeContent(data.cover_summary.main_title);
@@ -172,8 +246,8 @@ export const generatePostText = async (
     
     return data;
   } catch (e) {
-    console.error("JSON Parse Error. Full Text:", text);
-    throw new Error("内容解析失败，可能是由于 AI 生成的内容过长导致截断。请再点一次生成，通常即可恢复正常。");
+    console.error("Parse failure logic hit. Raw length:", text.length);
+    throw new Error("由于内容篇幅极长且接口响应受限，格式出现了微小偏差。请点击‘重新生成’，通常第二次即可完美输出。");
   }
 };
 
@@ -198,11 +272,11 @@ export const generatePostImage = async (
       } 
     });
     parts.push({ 
-      text: `Task: Create a social media cover image (Xiaohongshu style). Topic: ${topic}. Inspiration: Use the lighting and aesthetic style of the provided reference image. Aspect ratio 3:4. NO TEXT.` 
+      text: `Create an aesthetic Xiaohongshu cover for topic: ${topic}. Inherit the visual style and lighting from the attached reference. NO TEXT.` 
     });
   } else {
     parts.push({ 
-      text: `Professional aesthetic photography for Xiaohongshu cover. Topic: ${topic}, Style: ${style}. High definition, cinematic lighting, 3:4 aspect ratio, NO TEXT.` 
+      text: `Stunning aesthetic photography for Xiaohongshu. Topic: ${topic}, Style: ${style}. Cinematic, 3:4 aspect ratio, NO TEXT.` 
     });
   }
 
@@ -226,11 +300,11 @@ export const generatePostImage = async (
     }
   }
   
-  throw new Error("图像生成遇到问题，请重新点击生成。");
+  throw new Error("封面图生成暂时遇到困难，请稍后重试。");
 };
 
 /**
- * Get viral titles
+ * Get viral titles (Inspiration Feature)
  */
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
@@ -239,7 +313,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
   
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
-    contents: `针对话题“${topic}”，给出5个小红书风格标题。返回 JSON 字符串数组。`,
+    contents: `为话题“${topic}”提供5个小红书爆款标题。直接返回 JSON 数组格式，不要有任何其他文字。`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -249,7 +323,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
     }
   });
   try {
-    return JSON.parse(response.text || "[]");
+    return parseSafeJson(response.text || "[]");
   } catch {
     return [];
   }

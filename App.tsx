@@ -14,7 +14,6 @@ declare global {
 }
 
 const App: React.FC = () => {
-  // 状态定义
   const [topic, setTopic] = useState('');
   const [style, setStyle] = useState<StyleType>('emotional');
   const [length, setLength] = useState<LengthType>('medium');
@@ -31,15 +30,12 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
-  
-  // 密钥授权状态 - 默认设为 true，因为服务层已提供内置 Key
   const [isAuthorized, setIsAuthorized] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // 初始化模板数据
     const now = new Date();
     setMemoData({
       date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
@@ -72,16 +68,14 @@ const App: React.FC = () => {
     setGeneratedImage(null);
     
     const progInt = setInterval(() => {
-      setProgress(p => (p >= 95 ? p : p + (p < 50 ? 2 : 0.4)));
-    }, 200);
+      setProgress(p => (p >= 95 ? p : p + (p < 40 ? 3 : 0.5)));
+    }, 250);
 
     try {
-      // 1. 生成文案
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
-      setProgress(60);
+      setProgress(75);
 
-      // 2. 生成封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -99,15 +93,11 @@ const App: React.FC = () => {
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
       console.error("Workflow Error:", err);
-      
-      // 如果出现密钥错误，引导用户
       if (err.message?.includes("API key not valid") || err.message?.includes("INVALID_ARGUMENT")) {
-        setError("当前免费接口压力较大或密钥失效，请尝试点击下方“关联密钥”使用您自己的 Key。");
+        setError("内置免费额度暂不可用，请点击关联您的个人密钥。");
         setIsAuthorized(false); 
-      } else if (err.message?.includes("quota") || err.message?.includes("429")) {
-        setError("当前接口请求过于频繁，请稍后再试或切换到您的个人 Key。");
       } else {
-        setError(err.message || "生成失败，请检查网络后重试");
+        setError(err.message || "生成失败，请重试。建议尝试较短的篇幅或话题。");
       }
       setLoading(false);
     } finally {
@@ -116,32 +106,22 @@ const App: React.FC = () => {
     }
   };
 
-  // 如果被判定未授权（通常是报错后），显示授权引导
   if (!isAuthorized) {
     return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-white p-6">
-        <div className="w-20 h-20 bg-red-500 rounded-3xl flex items-center justify-center text-white mb-8 shadow-2xl animate-bounce">
-          <Sparkles size={40} />
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-white p-6">
+        <div className="w-16 h-16 bg-red-500 rounded-2xl flex items-center justify-center text-white mb-6 shadow-xl animate-bounce">
+          <Sparkles size={32} />
         </div>
-        <h1 className="text-3xl font-black text-gray-900 mb-4 text-center">API 密钥需要更新</h1>
-        <p className="text-gray-500 text-center max-w-sm mb-10 leading-relaxed font-medium">
-          内置免费密钥可能已失效或超出限额。您可以关联自己的 Google AI 密钥以继续享受无限次生成体验。
+        <h1 className="text-2xl font-black text-gray-900 mb-2">更新密钥</h1>
+        <p className="text-gray-500 text-center max-w-sm mb-8 text-sm">
+          免费配额有限，为了保证长文本的稳定输出，建议使用您个人的 Google AI API 密钥。
         </p>
-        
-        <div className="flex flex-col gap-4 w-full max-w-xs">
-          <button 
-            onClick={handleOpenKeySelector}
-            className="flex items-center justify-center gap-3 bg-gray-900 text-white py-4 rounded-2xl font-bold shadow-xl hover:bg-black transition-all active:scale-95"
-          >
-            <Key size={20} />
-            关联个人 API 密钥
+        <div className="flex flex-col gap-3 w-full max-w-xs">
+          <button onClick={handleOpenKeySelector} className="flex items-center justify-center gap-2 bg-gray-900 text-white py-3.5 rounded-xl font-bold shadow-lg hover:bg-black transition-all">
+            <Key size={18} /> 关联 API 密钥
           </button>
-          
-          <button 
-            onClick={() => setIsAuthorized(true)}
-            className="text-sm text-gray-400 font-bold hover:text-red-500 transition-colors"
-          >
-            继续尝试使用内置密钥
+          <button onClick={() => setIsAuthorized(true)} className="text-xs text-gray-400 font-bold hover:text-red-500 py-2 transition-colors">
+            尝试继续使用免费密钥
           </button>
         </div>
       </div>
@@ -149,41 +129,45 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans relative">
-      <ControlPanel 
-        topic={topic} setTopic={setTopic}
-        style={style} setStyle={setStyle}
-        length={length} setLength={setLength}
-        coverMode={coverMode} setCoverMode={setCoverMode}
-        memoData={memoData} setMemoData={setMemoData}
-        referenceImage={referenceImage} 
-        onImageUpload={(e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          const r = new FileReader();
-          r.onloadend = () => {
-            setReferenceImage(r.result as string);
-            setReferenceImageRaw((r.result as string).split(',')[1]);
-          };
-          r.readAsDataURL(file);
-        }} 
-        onClearImage={() => { setReferenceImage(null); setReferenceImageRaw(null); }}
-        loading={loading} progress={progress} onGenerate={handleGenerate} error={error}
-        fileInputRef={fileInputRef}
-      />
+    <div className="flex flex-col lg:flex-row min-h-screen bg-white text-gray-800 font-sans relative">
+      <div className="w-full lg:w-1/3 border-b lg:border-b-0 lg:border-r border-gray-100 h-auto lg:h-screen lg:sticky lg:top-0 overflow-y-auto scrollbar-hide">
+        <ControlPanel 
+          topic={topic} setTopic={setTopic}
+          style={style} setStyle={setStyle}
+          length={length} setLength={setLength}
+          coverMode={coverMode} setCoverMode={setCoverMode}
+          memoData={memoData} setMemoData={setMemoData}
+          referenceImage={referenceImage} 
+          onImageUpload={(e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const r = new FileReader();
+            r.onloadend = () => {
+              setReferenceImage(r.result as string);
+              setReferenceImageRaw((r.result as string).split(',')[1]);
+            };
+            r.readAsDataURL(file);
+          }} 
+          onClearImage={() => { setReferenceImage(null); setReferenceImageRaw(null); }}
+          loading={loading} progress={progress} onGenerate={handleGenerate} error={error}
+          fileInputRef={fileInputRef}
+        />
+      </div>
       
-      <PreviewPanel 
-        loading={loading} imageLoading={imageLoading}
-        generatedData={generatedData} generatedImage={generatedImage}
-        coverMode={coverMode} memoData={memoData} coverRef={coverRef}
-        imageExportSuccess={''} copySuccess={false}
-        onCopyText={() => {
-          if (!generatedData) return;
-          const t = `${generatedData.title}\n\n${generatedData.content}\n\n${generatedData.tags.map(t=>t.startsWith('#')?t:`#${t}`).join(' ')}`;
-          navigator.clipboard.writeText(t);
-        }}
-        onCopyCover={() => {}} onDownloadCover={() => {}}
-      />
+      <div className="flex-1 min-h-[600px] lg:h-screen overflow-hidden bg-gray-50">
+        <PreviewPanel 
+          loading={loading} imageLoading={imageLoading}
+          generatedData={generatedData} generatedImage={generatedImage}
+          coverMode={coverMode} memoData={memoData} coverRef={coverRef}
+          imageExportSuccess={''} copySuccess={false}
+          onCopyText={() => {
+            if (!generatedData) return;
+            const t = `${generatedData.title}\n\n${generatedData.content}\n\n${generatedData.tags.map(t=>t.startsWith('#')?t:`#${t}`).join(' ')}`;
+            navigator.clipboard.writeText(t);
+          }}
+          onCopyCover={() => {}} onDownloadCover={() => {}}
+        />
+      </div>
     </div>
   );
 };
