@@ -5,6 +5,16 @@ import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
 
+// 定义 aistudio 全局接口
+declare global {
+  interface Window {
+    aistudio: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
+
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [style, setStyle] = useState<StyleType>('emotional');
@@ -22,12 +32,10 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
 
-  // Initialize and check for existing API key selection for Gemini 3 Pro models
   useEffect(() => {
     const now = new Date();
     setMemoData({
@@ -39,27 +47,7 @@ const App: React.FC = () => {
       body: '好的内容需要好的排版。\n\n尝试在左侧输入一个话题，让我们开始创作吧！',
       footer: 'RedNote Generator'
     });
-
-    const checkKey = async () => {
-      const win = window as any;
-      if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
-        const has = await win.aistudio.hasSelectedApiKey();
-        setHasApiKey(has);
-      } else {
-        setHasApiKey(true);
-      }
-    };
-    checkKey();
   }, []);
-
-  const handleSelectKey = async () => {
-    const win = window as any;
-    if (win.aistudio && typeof win.aistudio.openSelectKey === 'function') {
-      await win.aistudio.openSelectKey();
-      // Assume success after triggering the selection dialog
-      setHasApiKey(true);
-    }
-  };
 
   const handleGenerate = async () => {
     if (!topic) {
@@ -67,13 +55,17 @@ const App: React.FC = () => {
       return;
     }
 
-    // Ensure API key is selected when using gemini-3-pro-image-preview
-    const win = window as any;
-    if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
-      const has = await win.aistudio.hasSelectedApiKey();
-      if (!has) {
-        await win.aistudio.openSelectKey();
-        setHasApiKey(true);
+    // 根据规范，使用 gemini-3-pro-image-preview 前必须提示用户选择 API Key
+    if (coverMode !== 'template') {
+      try {
+        if (typeof window.aistudio !== 'undefined' && typeof window.aistudio.hasSelectedApiKey === 'function') {
+          const hasKey = await window.aistudio.hasSelectedApiKey();
+          if (!hasKey) {
+            await window.aistudio.openSelectKey();
+          }
+        }
+      } catch (e) {
+        console.warn("API Key check error, continuing with environment variable:", e);
       }
     }
 
@@ -88,12 +80,12 @@ const App: React.FC = () => {
     }, 200);
 
     try {
-      // 1. 生成文案
+      // 1. 文案生成
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(60);
 
-      // 2. 生成封面
+      // 2. 封面生成
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -110,15 +102,17 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("Generation error:", err);
-      // Handle the specific error for project/key billing issues
+      console.error("Workflow Error:", err);
+      // 处理计费及密钥失效错误
       if (err.message?.includes("Requested entity was not found")) {
-        setHasApiKey(false);
-        setError("所选 API Key 校验失败（可能由于项目未启用计费），请重新选择。");
+        setError("API 密钥校验失败或已过期，请重新选择并确保关联了有效的计费项目。");
+        if (typeof window.aistudio !== 'undefined') {
+          await window.aistudio.openSelectKey();
+        }
       } else if (err.message === "API_KEY_MISSING") {
-        setError("API密钥缺失。请在 Vercel 环境变量中设置 API_KEY。");
+        setError("环境变量注入失败：Vercel 端未检测到有效的 API_KEY。请确保您在 Vercel 面板中添加了 API_KEY 变量并重新部署。");
       } else {
-        setError(err.message || "服务暂时不可用，请稍后重试");
+        setError(err.message || "生成失败，请检查网络或配置状态");
       }
       setLoading(false);
     } finally {
@@ -126,33 +120,6 @@ const App: React.FC = () => {
       setImageLoading(false);
     }
   };
-
-  // Mandatory splash screen for key selection before accessing the app functionalities
-  if (hasApiKey === false) {
-    return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-white p-8 text-center">
-        <div className="w-16 h-16 bg-[#ff2442] rounded-2xl flex items-center justify-center text-white font-black text-2xl mb-6 shadow-2xl">小</div>
-        <h1 className="text-2xl font-black mb-4 tracking-tight">开启爆款创作之旅</h1>
-        <p className="text-gray-500 mb-8 max-w-sm text-sm leading-relaxed font-medium">
-          本应用使用 Gemini 3 Pro 旗舰模型。在使用前，您需要关联一个已启用计费的 API Key 项目。
-        </p>
-        <button 
-          onClick={handleSelectKey}
-          className="px-10 py-4 bg-gray-900 text-white font-bold rounded-2xl hover:bg-black transition-all shadow-xl active:scale-95"
-        >
-          关联 API Key 项目
-        </button>
-        <a 
-          href="https://ai.google.dev/gemini-api/docs/billing" 
-          target="_blank" 
-          rel="noreferrer"
-          className="mt-8 text-xs text-blue-500 hover:underline font-medium"
-        >
-          了解计费与配额配置
-        </a>
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans relative">
