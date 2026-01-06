@@ -52,19 +52,16 @@ const App: React.FC = () => {
     setGeneratedImage(null);
     
     const progInt = setInterval(() => {
-      setProgress(p => {
-        if (p >= 95) return p;
-        return p + (p < 50 ? 2 : 0.4);
-      });
+      setProgress(p => (p >= 95 ? p : p + (p < 50 ? 2 : 0.4)));
     }, 200);
 
     try {
-      // 1. 文案生成
+      // 1. 生成文案
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(60);
 
-      // 2. 封面生成
+      // 2. 生成封面
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -81,8 +78,11 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("Generate Workflow Error:", err.message);
-      setError(`生成失败: ${err.message || "请检查 API_KEY 是否配置正确"}`);
+      if (err.message === "API_KEY_MISSING") {
+        setError("API密钥缺失。请在 Vercel 环境变量中设置 API_KEY。");
+      } else {
+        setError(err.message || "服务暂时不可用，请稍后重试");
+      }
       setLoading(false);
     } finally {
       clearInterval(progInt);
@@ -121,7 +121,7 @@ const App: React.FC = () => {
         imageExportSuccess={''} copySuccess={false}
         onCopyText={() => {
           if (!generatedData) return;
-          const t = `${generatedData.title}\n\n${generatedData.content}\n\n${generatedData.tags.join(' ')}`;
+          const t = `${generatedData.title}\n\n${generatedData.content}\n\n${generatedData.tags.map(t=>t.startsWith('#')?t:`#${t}`).join(' ')}`;
           navigator.clipboard.writeText(t);
         }}
         onCopyCover={() => {}} onDownloadCover={() => {}}
