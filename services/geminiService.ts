@@ -4,42 +4,48 @@ import { GeneratedPost } from "../types";
 
 /**
  * 核心逻辑：直接使用注入的 process.env.API_KEY
- * 在调用前即时实例化，确保获取最新的授权状态
+ * 按照规范，在每次调用前即时实例化 GoogleGenAI。
  */
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    throw new Error("API_KEY_NOT_CONFIGURED");
+  }
+  return new GoogleGenAI({ apiKey });
+};
+
 export const generatePostText = async (
   topic: string,
   style: string,
   length: string,
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = getAiClient();
   
   const lengthStrategy = length === 'long' 
-    ? "这是一篇深度长文（约800字），需要多级副标题、详细的步骤或独到见解。" 
-    : (length === 'short' ? "短小精悍，控制在200字以内，直击痛点。" : "中等篇幅，400字左右，排版精致。");
+    ? "这是一篇深度长文（约800字），需要多级副标题、详细的步骤或见解。" 
+    : (length === 'short' ? "短小精悍，控制在200字以内，重点突出。" : "中等篇幅，400字左右，排版舒适。");
 
   const prompt = `
-    你是一位拥有千万粉丝的小红书顶级博主，擅长捕捉社会热点、制造视觉冲突和情感共鸣。
-    请围绕话题“${topic}”创作一篇风格为“${style}”的爆款笔记。
+    你是一位拥有千万粉丝的小红书爆款博主，擅长捕捉热点、制造共鸣。
+    话题：${topic}
+    风格：${style}
+    篇幅：${lengthStrategy}
     
-    【篇幅要求】
-    ${lengthStrategy}
+    【创作指南】
+    1. 标题：极具吸引力，包含 2-3 个关键词，使用表情符号。
+    2. 正文：排版优雅，多用 Emoji，语感亲切。
+    3. 标签：生成 5-10 个热点标签。
+    ${isTemplateMode ? '4. 封面文案：针对 iOS 备忘录风格，提取 main_title (主标题), highlight_text (金句), body_preview (简短摘要)。' : ''}
     
-    【输出规范】
-    1. 标题：极具吸引力，包含关键词和 Emoji，引发点击欲望。
-    2. 正文：使用“呼吸感”排版，段落简短，大量使用小红书热门 Emoji。
-    3. 标签：提供 5-8 个精准的流量标签。
-    ${isTemplateMode ? '4. 备忘录文案：提取 main_title (标题), highlight_text (高亮金句), body_preview (简短摘要)。' : ''}
-    
-    必须以纯 JSON 格式返回。
+    请严格按照 JSON 格式输出，不要包含任何 Markdown 代码块包裹。
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 32768 }, // 开启最大思考预算，确保高质量逻辑
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -63,12 +69,12 @@ export const generatePostText = async (
     });
 
     const text = response.text;
-    if (!text) throw new Error("AI 未能生成内容");
+    if (!text) throw new Error("AI 响应内容为空");
     return JSON.parse(text);
   } catch (error: any) {
-    console.error("Text Gen Error:", error);
-    if (error.message?.includes("Requested entity was not found")) {
-      throw new Error("AUTH_NEED_RESET");
+    console.error("Gemini Text Error:", error);
+    if (error.message?.includes("API key not valid") || error.message?.includes("API_KEY_NOT_CONFIGURED")) {
+      throw new Error("AUTH_FAILED");
     }
     throw error;
   }
@@ -79,13 +85,13 @@ export const generatePostImage = async (
   style: string,
   refImageBase64?: string
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = getAiClient();
   
   const styleKeywords: Record<string, string> = {
-    emotional: "soft film aesthetic, moody lighting, healing vibes, high-end lifestyle",
-    educational: "minimalist flatlay, clean aesthetic, product photography, bright",
-    promotion: "luxury product close-up, studio lighting, commercial quality",
-    rant: "authentic street photography, high contrast, realistic texture"
+    emotional: "cinematic film, soft lighting, healing atmosphere",
+    educational: "clean flatlay, aesthetic workspace, minimalist",
+    promotion: "premium product photography, studio lighting",
+    rant: "realistic street style, high contrast, authentic"
   };
 
   const parts: any[] = [];
@@ -93,48 +99,40 @@ export const generatePostImage = async (
     parts.push({
       inlineData: { mimeType: 'image/png', data: refImageBase64 }
     });
-    parts.push({ text: `根据这张参考图的构图和色调，为话题“${topic}”生成一张小红书封面大片，画面中不要出现任何文字。` });
+    parts.push({ text: `Based on this reference image's composition and color, generate an aesthetic Xiaohongshu cover for "${topic}". NO TEXT.` });
   } else {
-    parts.push({ text: `A high-quality aesthetic Xiaohongshu cover image for: ${topic}. Style: ${styleKeywords[style] || "aesthetic"}. 3:4 aspect ratio, NO TEXT, ultra-high resolution.` });
+    parts.push({ text: `A high-quality aesthetic Xiaohongshu cover photo for: ${topic}. Style: ${styleKeywords[style] || "aesthetic"}. 3:4 aspect ratio, no text.` });
   }
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
+      model: 'gemini-2.5-flash-image',
       contents: { parts },
       config: {
-        imageConfig: {
-          aspectRatio: "3:4",
-          imageSize: "1K"
-        },
-        tools: [{ googleSearch: {} }] // 启用搜索以增强图像的时代感
+        imageConfig: { aspectRatio: "3:4" }
       }
     });
 
-    // 遍历 parts 寻找图片数据
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    throw new Error("未能生成图片部分");
+    throw new Error("未生成有效图片");
   } catch (error: any) {
-    console.error("Image Gen Error:", error);
-    if (error.message?.includes("Requested entity was not found")) {
-      throw new Error("AUTH_NEED_RESET");
-    }
-    // 降级策略
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + " aesthetic")}?width=1080&height=1440&nologo=true`;
+    console.error("Gemini Image Error:", error);
+    // 降级使用公共生成器
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + " aesthetic style")}?width=1080&height=1440&nologo=true`;
   }
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = getAiClient();
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
-      contents: `针对话题“${topic}”，提供5个更具爆发力的小红书笔记标题方向。返回 JSON 字符串数组。`,
+      model: "gemini-3-flash-preview",
+      contents: `针对话题“${topic}”，提供5个小红书爆款标题。以 JSON 字符串数组返回。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
