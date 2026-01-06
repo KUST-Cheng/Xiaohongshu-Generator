@@ -24,6 +24,7 @@ const App: React.FC = () => {
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
   
+  // API Key 状态管理
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,6 +51,7 @@ const App: React.FC = () => {
       const hasKey = await aistudio.hasSelectedApiKey();
       setIsAuthorized(hasKey);
     } else {
+      // 本地环境或环境变量已配置的情况
       setIsAuthorized(!!process.env.API_KEY);
     }
   };
@@ -58,8 +60,7 @@ const App: React.FC = () => {
     const aistudio = (window as any).aistudio;
     if (aistudio && typeof aistudio.openSelectKey === 'function') {
       await aistudio.openSelectKey();
-      setIsAuthorized(true);
-      setError('');
+      setIsAuthorized(true); // 遵循立即跳转规范
     } else {
       setError("当前环境不支持选择密钥，请确保已配置 API_KEY 环境变量。");
     }
@@ -85,10 +86,12 @@ const App: React.FC = () => {
     }, 200);
 
     try {
+      // 1. 生成文案 (Gemini 3 Pro)
       const postData = await generatePostText(topic, style, length, coverMode === 'template');
       setGeneratedData(postData);
       setProgress(60);
 
+      // 2. 生成封面 (Gemini 3 Pro Image)
       if (coverMode === 'template' && postData.cover_summary) {
         setMemoData(prev => ({
           ...prev,
@@ -105,25 +108,13 @@ const App: React.FC = () => {
       setProgress(100);
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
-      console.error("Generate Flow Error:", err.message);
-      
-      // 增强型错误映射
-      const errorMap: Record<string, string> = {
-        "QUOTA_EXCEEDED": "Gemini API 免费配额已用完，请稍后再试或联系管理员。",
-        "AUTH_INVALID": "API 密钥无效。请检查环境变量或尝试重新连接服务。",
-        "AUTH_NEED_RESET": "授权已过期或失效。请点击下方按钮重新连接服务。",
-        "PERMISSION_DENIED": "权限被拒。请确认 API 密钥已开启 Gemini 3 Pro 模型的使用权限并绑定了结算账户。",
-        "AI_EMPTY_RESPONSE": "模型响应内容为空，可能是由于安全过滤器拦截，请尝试更换话题。",
-        "UNKNOWN_ERROR": "发生未知服务错误，请检查网络连接后重试。"
-      };
-
-      const mappedError = errorMap[err.message] || `生成失败: ${err.message}`;
-      
-      if (["AUTH_NEED_RESET", "AUTH_INVALID"].includes(err.message)) {
+      console.error("Workflow Error:", err);
+      if (err.message === "AUTH_NEED_RESET") {
         setIsAuthorized(false);
+        setError("授权已失效，请重新连接服务。");
+      } else {
+        setError(err.message || '服务繁忙，请稍后再试');
       }
-      
-      setError(mappedError);
       setLoading(false);
     } finally {
       clearInterval(progInt);
@@ -131,6 +122,7 @@ const App: React.FC = () => {
     }
   };
 
+  // 授权门禁界面
   if (isAuthorized === false) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-[#fcfcfc] p-6 animate-fadeIn">
@@ -140,7 +132,7 @@ const App: React.FC = () => {
           </div>
           <h1 className="text-2xl font-black text-gray-900 mb-3">连接创作服务</h1>
           <p className="text-gray-500 text-sm mb-10 leading-relaxed">
-            为了使用最新的 Gemini 3 Pro 旗舰模型，请先通过 AI Studio 完成环境授权。
+            为了使用最新的 Gemini 3 Pro 旗舰模型生成高质量文案与封面，请先完成环境授权。
           </p>
           
           <div className="space-y-4">
@@ -164,12 +156,13 @@ const App: React.FC = () => {
             <ShieldCheck size={12} />
             <span>Secure Enterprise Environment</span>
           </div>
-          {error && <p className="mt-4 text-xs text-red-500 font-medium px-4 py-2 bg-red-50 rounded-lg border border-red-100">{error}</p>}
+          {error && <p className="mt-4 text-xs text-red-500 font-medium">{error}</p>}
         </div>
       </div>
     );
   }
 
+  // 加载中界面
   if (isAuthorized === null) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-white">

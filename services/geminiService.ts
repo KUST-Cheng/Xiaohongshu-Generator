@@ -3,29 +3,9 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 统一的错误识别函数
+ * 核心逻辑：直接使用注入的 process.env.API_KEY
+ * 在调用前即时实例化，确保获取最新的授权状态
  */
-const handleApiError = (error: any) => {
-  const message = error?.message || "";
-  console.error("Gemini API Error Detail:", error);
-
-  if (message.includes("429") || message.includes("quota")) {
-    throw new Error("QUOTA_EXCEEDED");
-  }
-  if (message.includes("401") || message.includes("API key not valid")) {
-    throw new Error("AUTH_INVALID");
-  }
-  if (message.includes("403")) {
-    // 403 通常涉及权限、地区限制或未开启计费（Gemini 3 系列模型要求）
-    throw new Error("PERMISSION_DENIED");
-  }
-  if (message.includes("Requested entity was not found")) {
-    throw new Error("AUTH_NEED_RESET");
-  }
-  
-  throw new Error(message || "UNKNOWN_ERROR");
-};
-
 export const generatePostText = async (
   topic: string,
   style: string,
@@ -59,7 +39,7 @@ export const generatePostText = async (
       model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
-        thinkingConfig: { thinkingBudget: 32768 },
+        thinkingConfig: { thinkingBudget: 32768 }, // 开启最大思考预算，确保高质量逻辑
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -83,10 +63,14 @@ export const generatePostText = async (
     });
 
     const text = response.text;
-    if (!text) throw new Error("AI_EMPTY_RESPONSE");
+    if (!text) throw new Error("AI 未能生成内容");
     return JSON.parse(text);
   } catch (error: any) {
-    return handleApiError(error);
+    console.error("Text Gen Error:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+      throw new Error("AUTH_NEED_RESET");
+    }
+    throw error;
   }
 };
 
@@ -122,25 +106,24 @@ export const generatePostImage = async (
         imageConfig: {
           aspectRatio: "3:4",
           imageSize: "1K"
-        }
+        },
+        tools: [{ googleSearch: {} }] // 启用搜索以增强图像的时代感
       }
     });
 
+    // 遍历 parts 寻找图片数据
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    throw new Error("IMAGE_DATA_MISSING");
+    throw new Error("未能生成图片部分");
   } catch (error: any) {
-    // 图片生成失败时，先尝试解析特定错误，如果是认证问题则向上抛出，否则返回降级方案
-    try {
-        handleApiError(error);
-    } catch (e: any) {
-        if (["AUTH_INVALID", "AUTH_NEED_RESET", "PERMISSION_DENIED"].includes(e.message)) {
-            throw e;
-        }
+    console.error("Image Gen Error:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+      throw new Error("AUTH_NEED_RESET");
     }
+    // 降级策略
     return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + " aesthetic")}?width=1080&height=1440&nologo=true`;
   }
 };
