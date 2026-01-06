@@ -5,16 +5,6 @@ import PreviewPanel from './components/PreviewPanel';
 import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './types';
 import { generatePostText, generatePostImage } from './services/geminiService';
 
-// 定义 aistudio 全局接口
-declare global {
-  interface Window {
-    aistudio: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
-  }
-}
-
 const App: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [style, setStyle] = useState<StyleType>('emotional');
@@ -32,11 +22,15 @@ const App: React.FC = () => {
   const [generatedData, setGeneratedData] = useState<GeneratedPost | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState('');
+  
+  // null 表示正在检查，false 表示彻底缺失
+  const [isKeyAvailable, setIsKeyAvailable] = useState<boolean | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // 初始化模板
     const now = new Date();
     setMemoData({
       date: `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`,
@@ -47,7 +41,40 @@ const App: React.FC = () => {
       body: '好的内容需要好的排版。\n\n尝试在左侧输入一个话题，让我们开始创作吧！',
       footer: 'RedNote Generator'
     });
+
+    // 检查可用密钥
+    const checkKey = async () => {
+      // 1. 优先检查环境变量
+      const envKey = process.env.API_KEY;
+      if (envKey && envKey.length > 5) {
+        setIsKeyAvailable(true);
+        return;
+      }
+
+      // 2. 检查 AI Studio 授权桥接
+      const win = window as any;
+      if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
+        try {
+          const selected = await win.aistudio.hasSelectedApiKey();
+          setIsKeyAvailable(selected);
+        } catch (e) {
+          setIsKeyAvailable(false);
+        }
+      } else {
+        setIsKeyAvailable(false);
+      }
+    };
+    
+    checkKey();
   }, []);
+
+  const handleSelectKey = async () => {
+    const win = window as any;
+    if (win.aistudio && typeof win.aistudio.openSelectKey === 'function') {
+      await win.aistudio.openSelectKey();
+      setIsKeyAvailable(true); // 遵循规范假设成功
+    }
+  };
 
   const handleGenerate = async () => {
     if (!topic) {
@@ -55,25 +82,9 @@ const App: React.FC = () => {
       return;
     }
 
-    // 根据规范，使用 gemini-3-pro-image-preview 前必须提示用户选择 API Key
-    if (coverMode !== 'template') {
-      try {
-        if (typeof window.aistudio !== 'undefined' && typeof window.aistudio.hasSelectedApiKey === 'function') {
-          const hasKey = await window.aistudio.hasSelectedApiKey();
-          if (!hasKey) {
-            await window.aistudio.openSelectKey();
-          }
-        }
-      } catch (e) {
-        console.warn("API Key check error, continuing with environment variable:", e);
-      }
-    }
-
     setLoading(true);
     setProgress(5);
     setError('');
-    setGeneratedData(null);
-    setGeneratedImage(null);
     
     const progInt = setInterval(() => {
       setProgress(p => (p >= 95 ? p : p + (p < 50 ? 2 : 0.4)));
@@ -103,16 +114,13 @@ const App: React.FC = () => {
       setTimeout(() => setLoading(false), 500);
     } catch (err: any) {
       console.error("Workflow Error:", err);
-      // 处理计费及密钥失效错误
-      if (err.message?.includes("Requested entity was not found")) {
-        setError("API 密钥校验失败或已过期，请重新选择并确保关联了有效的计费项目。");
-        if (typeof window.aistudio !== 'undefined') {
-          await window.aistudio.openSelectKey();
-        }
-      } else if (err.message === "API_KEY_MISSING") {
-        setError("环境变量注入失败：Vercel 端未检测到有效的 API_KEY。请确保您在 Vercel 面板中添加了 API_KEY 变量并重新部署。");
+      if (err.message === "API_KEY_MISSING") {
+        setError("API Key 缺失：请在 Vercel 面板中添加环境变量 API_KEY。");
+        setIsKeyAvailable(false);
+      } else if (err.message?.includes("Requested entity was not found")) {
+        setError("服务暂时不可用：请检查密钥计费状态或中转站配置。");
       } else {
-        setError(err.message || "生成失败，请检查网络或配置状态");
+        setError(err.message || "生成失败，请重试");
       }
       setLoading(false);
     } finally {
@@ -120,6 +128,26 @@ const App: React.FC = () => {
       setImageLoading(false);
     }
   };
+
+  if (isKeyAvailable === null) return null;
+
+  if (isKeyAvailable === false) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-white p-8 text-center">
+        <div className="w-16 h-16 bg-[#ff2442] rounded-2xl flex items-center justify-center text-white font-black text-2xl mb-6 shadow-2xl">小</div>
+        <h1 className="text-2xl font-black mb-4 tracking-tight">配置 API Key</h1>
+        <p className="text-gray-500 mb-8 max-w-sm text-sm leading-relaxed font-medium">
+          未检测到 API 密钥。如果您已在 Vercel 配置，请确保重新部署。或者点击下方按钮手动关联。
+        </p>
+        <button 
+          onClick={handleSelectKey}
+          className="px-10 py-4 bg-gray-900 text-white font-bold rounded-2xl hover:bg-black transition-all shadow-xl active:scale-95"
+        >
+          手动关联 API Key
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col lg:flex-row h-screen bg-white text-gray-800 overflow-hidden font-sans relative">
