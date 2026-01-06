@@ -8,8 +8,48 @@ const IMAGE_FREE_KEY = "sk-nBYh0WMJ0EBAxJQzpAtgG0j5G0xB8dEh09PowC5ZESx6qy7G";
 const PROXY_DOMAIN = "https://yunwu.ai";
 
 /**
- * Utility to compress and resize images before sending to API.
- * This prevents "Failed to fetch" errors caused by large request payloads.
+ * Robust Fetch Interceptor Guard
+ * Prevents multiple wrappings and handles all Request/URL/String variants correctly.
+ */
+if (!(window as any).__FETCH_HIJACKED__) {
+  const originalFetch = window.fetch;
+  (window as any).originalFetch = originalFetch;
+  window.fetch = async function(resource: string | Request | URL, config?: RequestInit) {
+    const targetDomain = 'generativelanguage.googleapis.com';
+    let url = '';
+
+    if (typeof resource === 'string') {
+      url = resource;
+    } else if (resource instanceof URL) {
+      url = resource.href;
+    } else if (resource instanceof Request) {
+      url = resource.url;
+    }
+
+    if (url.includes(targetDomain)) {
+      const newUrl = url.replace(`https://${targetDomain}`, PROXY_DOMAIN);
+      
+      // If it's a Request object, we must clone it for the new URL
+      if (resource instanceof Request) {
+        const { method, headers, body, mode, credentials, cache, redirect, referrer, integrity, signal } = resource;
+        // Note: body cannot be reused easily if it's a stream, 
+        // but for standard SDK calls it works fine.
+        const newRequest = new Request(newUrl, {
+          method, headers, body, mode, credentials, cache, redirect, referrer, integrity, signal
+        });
+        return originalFetch(newRequest);
+      }
+      
+      return originalFetch(newUrl, config);
+    }
+
+    return originalFetch(resource, config);
+  };
+  (window as any).__FETCH_HIJACKED__ = true;
+}
+
+/**
+ * Utility to compress and resize images
  */
 const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string> => {
   return new Promise((resolve) => {
@@ -19,7 +59,6 @@ const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string
       const canvas = document.createElement('canvas');
       let width = img.width;
       let height = img.height;
-
       if (width > height) {
         if (width > maxWidth) {
           height *= maxWidth / width;
@@ -31,39 +70,27 @@ const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string
           height = maxWidth;
         }
       }
-
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
       ctx?.drawImage(img, 0, 0, width, height);
-      // Export as JPEG with 0.8 quality to significantly reduce size
-      const compressed = canvas.toDataURL('image/jpeg', 0.8);
+      const compressed = canvas.toDataURL('image/jpeg', 0.7);
       resolve(compressed.split(',')[1]);
     };
   });
 };
 
 /**
- * Enhanced Fetch Hijack:
- * Transparently redirects all Google AI SDK traffic to the proxy server.
+ * Strips accidental JSON keys or code patterns from strings
  */
-const originalFetch = window.fetch;
-window.fetch = async function(...args: any[]) {
-  let [resource, config] = args;
-  
-  const targetDomain = 'generativelanguage.googleapis.com';
-  
-  if (typeof resource === 'string' && resource.includes(targetDomain)) {
-    resource = resource.replace(`https://${targetDomain}`, PROXY_DOMAIN);
-  } else if (resource instanceof URL && resource.href.includes(targetDomain)) {
-    resource = new URL(resource.href.replace(`https://${targetDomain}`, PROXY_DOMAIN));
-  } else if (resource instanceof Request && resource.url.includes(targetDomain)) {
-    // If it's a Request object, we need to clone it with the new URL
-    const newUrl = resource.url.replace(`https://${targetDomain}`, PROXY_DOMAIN);
-    resource = new Request(newUrl, resource);
-  }
-
-  return originalFetch(resource, config);
+const sanitizeContent = (text: string): string => {
+  if (!text) return "";
+  return text
+    // Remove "key": or key: patterns at the start of strings
+    .replace(/^["']?[\w_]+["']?\s*[:：]\s*/i, '')
+    // Remove any trailing quotes if AI accidentally wrapped the value
+    .replace(/^["']|["']$/g, '')
+    .trim();
 };
 
 /**
@@ -84,26 +111,31 @@ export const generatePostText = async (
 
   const prompt = `
     你是一位拥有千万粉丝的小红书爆款博主。针对话题“${topic}”，创作一篇风格为“${style}”的爆款笔记。
-    【创作要求】: 标题带 Emoji，正文有呼吸感，多用表情，结尾带 5-8 个标签。
+    【核心要求】: 
+    1. 标题吸睛，多用 Emoji。
+    2. 正文排版要有呼吸感。
+    3. 严禁在生成的文字内容中包含任何 JSON 字段名、变量名或代码标记（如 "title": 等）。
+    
     【篇幅策略】: ${lengthStrategy}
     
     ${isTemplateMode ? `
-    【特别指令 - 封面摘要】: 
-    请为 iOS 备忘录模版生成摘要内容。
-    - main_title: 极其吸睛的笔记主标题（3-8字）。
-    - highlight_text: 一句有力的话或痛点金句（15字以内）。
-    - body_preview: 正文的核心精华预览（30-50字）。
-    注意：摘要内容必须是地道、感性的中文，严禁出现任何 JSON 键名、技术术语、英文描述或类似代码的字符。
+    【爆款模版生成指令】:
+    请为 iOS 备忘录封面提取关键摘要。
+    - main_title: 核心大标题（3-10字）。
+    - highlight_text: 高亮痛点或金句（15字内）。
+    - body_preview: 吸引点击的精彩预览（40字内）。
+    注意：这些字段的值必须是纯文字，绝对不能带有任何冒号、引号或字段名称。
     ` : ''}
     
-    必须以纯 JSON 格式返回。
+    必须返回 JSON 格式。
   `;
 
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
     contents: prompt,
     config: {
-      thinkingConfig: { thinkingBudget: 16000 },
+      // Reduced thinking budget slightly to avoid proxy timeouts on repeated calls
+      thinkingConfig: { thinkingBudget: 8000 },
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -127,17 +159,16 @@ export const generatePostText = async (
   });
 
   const text = response.text;
-  if (!text) throw new Error("AI 返回内容为空");
+  if (!text) throw new Error("AI 返回内容为空，请再次点击生成");
   
   const data = JSON.parse(text) as GeneratedPost;
-  // Post-processing to remove any accidental field names in values
+  
+  // Sanitize all output fields
+  data.title = sanitizeContent(data.title);
   if (data.cover_summary) {
-    Object.keys(data.cover_summary).forEach(key => {
-        const k = key as keyof typeof data.cover_summary;
-        if (data.cover_summary![k]) {
-            data.cover_summary![k] = data.cover_summary![k].replace(/^(main_title|highlight_text|body_preview)[:：\s]*/i, '').trim();
-        }
-    });
+    data.cover_summary.main_title = sanitizeContent(data.cover_summary.main_title);
+    data.cover_summary.highlight_text = sanitizeContent(data.cover_summary.highlight_text);
+    data.cover_summary.body_preview = sanitizeContent(data.cover_summary.body_preview);
   }
   
   return data;
@@ -156,9 +187,7 @@ export const generatePostImage = async (
   
   const parts: any[] = [];
   if (refImageBase64) {
-    // Compress the image to ensure the request is not rejected for being too large
     const processedImage = await compressImage(refImageBase64);
-    
     parts.push({ 
       inlineData: { 
         mimeType: 'image/jpeg', 
@@ -166,13 +195,11 @@ export const generatePostImage = async (
       } 
     });
     parts.push({ 
-      text: `Create a new aesthetic Xiaohongshu cover inspired by the style, lighting, and mood of the provided image.
-      Topic: ${topic}.
-      Instructions: High-end photography, cinematic lighting, 3:4 aspect ratio. DO NOT include any text or watermarks.` 
+      text: `Generate a new Xiaohongshu cover inspired by the style of this image. Topic: ${topic}. High-end photography, cinematic, 3:4 aspect ratio. NO TEXT.` 
     });
   } else {
     parts.push({ 
-      text: `High-end aesthetic photography for Xiaohongshu cover. Topic: ${topic}. Style: ${style}. Soft cinematic lighting, shallow depth of field, 3:4 aspect ratio, NO TEXT.` 
+      text: `Aesthetic Xiaohongshu cover photography, topic: ${topic}, style: ${style}. High quality, 3:4 aspect ratio, NO TEXT.` 
     });
   }
 
@@ -187,7 +214,6 @@ export const generatePostImage = async (
     }
   });
 
-  // Extract image from response parts
   const candidate = response.candidates?.[0];
   if (candidate?.content?.parts) {
     for (const part of candidate.content.parts) {
@@ -197,11 +223,11 @@ export const generatePostImage = async (
     }
   }
   
-  throw new Error("模型未能生成图像，请尝试更换话题或重试");
+  throw new Error("图像生成遇到问题，请重试");
 };
 
 /**
- * Brainstorm viral titles
+ * Get viral titles
  */
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
@@ -210,7 +236,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
   
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
-    contents: `针对话题“${topic}”，给出5个更有爆发力、更符合小红书语境的差异化标题。返回 JSON 字符串数组。`,
+    contents: `针对话题“${topic}”，给出5个小红书风格标题。返回 JSON 数组。`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
