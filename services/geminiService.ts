@@ -2,30 +2,72 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
-// 用户提供的免费 API 配置
+// User provided free API configurations
 const TEXT_FREE_KEY = "sk-Hs7IJK3zeLnYrAHIWbx8jsxknnKkC1AA140ZhktdeF5zzAvq";
 const IMAGE_FREE_KEY = "sk-nBYh0WMJ0EBAxJQzpAtgG0j5G0xB8dEh09PowC5ZESx6qy7G";
 const PROXY_DOMAIN = "https://yunwu.ai";
 
 /**
- * 强化版 Fetch 劫持：
- * 确保完整转发所有参数，包括大容量的图片数据和特殊的请求头。
+ * Utility to compress and resize images before sending to API.
+ * This prevents "Failed to fetch" errors caused by large request payloads.
+ */
+const compressImage = async (base64Str: string, maxWidth = 1024): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${base64Str}`;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxWidth) {
+          width *= maxWidth / height;
+          height = maxWidth;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      // Export as JPEG with 0.8 quality to significantly reduce size
+      const compressed = canvas.toDataURL('image/jpeg', 0.8);
+      resolve(compressed.split(',')[1]);
+    };
+  });
+};
+
+/**
+ * Enhanced Fetch Hijack:
+ * Transparently redirects all Google AI SDK traffic to the proxy server.
  */
 const originalFetch = window.fetch;
 window.fetch = async function(...args: any[]) {
   let [resource, config] = args;
   
-  if (typeof resource === 'string' && resource.includes('generativelanguage.googleapis.com')) {
-    resource = resource.replace('https://generativelanguage.googleapis.com', PROXY_DOMAIN);
-  } else if (resource instanceof URL && resource.href.includes('generativelanguage.googleapis.com')) {
-    resource = new URL(resource.href.replace('https://generativelanguage.googleapis.com', PROXY_DOMAIN));
+  const targetDomain = 'generativelanguage.googleapis.com';
+  
+  if (typeof resource === 'string' && resource.includes(targetDomain)) {
+    resource = resource.replace(`https://${targetDomain}`, PROXY_DOMAIN);
+  } else if (resource instanceof URL && resource.href.includes(targetDomain)) {
+    resource = new URL(resource.href.replace(`https://${targetDomain}`, PROXY_DOMAIN));
+  } else if (resource instanceof Request && resource.url.includes(targetDomain)) {
+    // If it's a Request object, we need to clone it with the new URL
+    const newUrl = resource.url.replace(`https://${targetDomain}`, PROXY_DOMAIN);
+    resource = new Request(newUrl, resource);
   }
 
   return originalFetch(resource, config);
 };
 
 /**
- * 生成爆款文案
+ * Generate viral Xiaohongshu post text
  */
 export const generatePostText = async (
   topic: string,
@@ -51,7 +93,7 @@ export const generatePostText = async (
     - main_title: 极其吸睛的笔记主标题（3-8字）。
     - highlight_text: 一句有力的话或痛点金句（15字以内）。
     - body_preview: 正文的核心精华预览（30-50字）。
-    注意：摘要内容必须是地道、感性的中文，严禁出现任何 JSON 键名（如 "main_title"）、技术术语、英文描述或类似代码的字符。
+    注意：摘要内容必须是地道、感性的中文，严禁出现任何 JSON 键名、技术术语、英文描述或类似代码的字符。
     ` : ''}
     
     必须以纯 JSON 格式返回。
@@ -61,7 +103,7 @@ export const generatePostText = async (
     model: "gemini-3-pro-preview",
     contents: prompt,
     config: {
-      thinkingConfig: { thinkingBudget: 32768 },
+      thinkingConfig: { thinkingBudget: 16000 },
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -85,15 +127,15 @@ export const generatePostText = async (
   });
 
   const text = response.text;
-  if (!text) throw new Error("AI 返回文案为空，请重试");
+  if (!text) throw new Error("AI 返回内容为空");
   
-  // 简单清洗，防止 AI 在字段中混入多余的引导词
   const data = JSON.parse(text) as GeneratedPost;
+  // Post-processing to remove any accidental field names in values
   if (data.cover_summary) {
     Object.keys(data.cover_summary).forEach(key => {
         const k = key as keyof typeof data.cover_summary;
         if (data.cover_summary![k]) {
-            data.cover_summary![k] = data.cover_summary![k].replace(/^(main_title|highlight_text|body_preview)[:：\s]*/i, '');
+            data.cover_summary![k] = data.cover_summary![k].replace(/^(main_title|highlight_text|body_preview)[:：\s]*/i, '').trim();
         }
     });
   }
@@ -102,7 +144,7 @@ export const generatePostText = async (
 };
 
 /**
- * 生成爆款封面
+ * Generate aesthetic cover image
  */
 export const generatePostImage = async (
   topic: string,
@@ -114,22 +156,23 @@ export const generatePostImage = async (
   
   const parts: any[] = [];
   if (refImageBase64) {
-    // 确保图片部分在 Prompt 之前，有助于模型理解参考关系
+    // Compress the image to ensure the request is not rejected for being too large
+    const processedImage = await compressImage(refImageBase64);
+    
     parts.push({ 
       inlineData: { 
-        mimeType: 'image/png', 
-        data: refImageBase64 
+        mimeType: 'image/jpeg', 
+        data: processedImage 
       } 
     });
     parts.push({ 
-      text: `Task: Generate a new aesthetic cover for Xiaohongshu. 
-      Topic: ${topic}. 
-      Reference: Use the provided image for composition, lighting, and color palette inspiration. 
-      Requirement: Professional photography, NO text on image, 3:4 aspect ratio, high definition.` 
+      text: `Create a new aesthetic Xiaohongshu cover inspired by the style, lighting, and mood of the provided image.
+      Topic: ${topic}.
+      Instructions: High-end photography, cinematic lighting, 3:4 aspect ratio. DO NOT include any text or watermarks.` 
     });
   } else {
     parts.push({ 
-      text: `Professional aesthetic photography for Xiaohongshu cover, topic: ${topic}, style: ${style}. High quality, cinematic lighting, 3:4 aspect ratio, NO TEXT ON IMAGE.` 
+      text: `High-end aesthetic photography for Xiaohongshu cover. Topic: ${topic}. Style: ${style}. Soft cinematic lighting, shallow depth of field, 3:4 aspect ratio, NO TEXT.` 
     });
   }
 
@@ -144,17 +187,21 @@ export const generatePostImage = async (
     }
   });
 
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      return `data:image/png;base64,${part.inlineData.data}`;
+  // Extract image from response parts
+  const candidate = response.candidates?.[0];
+  if (candidate?.content?.parts) {
+    for (const part of candidate.content.parts) {
+      if (part.inlineData?.data) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
     }
   }
   
-  throw new Error("图像模型生成超时或未返回数据，请检查网络或重试");
+  throw new Error("模型未能生成图像，请尝试更换话题或重试");
 };
 
 /**
- * 获取灵感标题
+ * Brainstorm viral titles
  */
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
@@ -163,7 +210,7 @@ export const generateRelatedTopics = async (topic: string): Promise<string[]> =>
   
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
-    contents: `针对话题“${topic}”，给出5个更有爆发力、更符合小红书语境的差异化标题方向。以 JSON 字符串数组格式返回。`,
+    contents: `针对话题“${topic}”，给出5个更有爆发力、更符合小红书语境的差异化标题。返回 JSON 字符串数组。`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
