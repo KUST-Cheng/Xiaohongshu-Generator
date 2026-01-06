@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import ControlPanel from './components/ControlPanel';
 import PreviewPanel from './components/PreviewPanel';
@@ -5,8 +6,6 @@ import { StyleType, LengthType, CoverMode, MemoData, GeneratedPost } from './typ
 import { generatePostText, generatePostImage } from './services/geminiService';
 import { Sparkles, Key, AlertCircle, ExternalLink } from 'lucide-react';
 
-// Declare aistudio globally for TypeScript by augmenting the existing AIStudio interface.
-// This avoids clashing with existing declarations of 'aistudio' on the Window object.
 declare global {
   interface AIStudio {
     hasSelectedApiKey: () => Promise<boolean>;
@@ -54,16 +53,17 @@ const App: React.FC = () => {
       footer: 'RedNote Generator'
     });
 
-    // 2. Check for API Key (Mandatory for Gemini 3 Pro models)
+    // 2. Check for API Key
     const initAuth = async () => {
-      // First check if a key is already injected (Vercel env)
-      if (process.env.API_KEY && process.env.API_KEY.length > 5) {
+      // Check if a key is already injected
+      const envKey = process.env.API_KEY;
+      if (envKey && envKey.length > 5) {
         setIsAuthorized(true);
         setHasCheckedKey(true);
         return;
       }
 
-      // If not, check aistudio bridge
+      // Check aistudio bridge
       if (window.aistudio) {
         try {
           const hasKey = await window.aistudio.hasSelectedApiKey();
@@ -71,6 +71,10 @@ const App: React.FC = () => {
         } catch (e) {
           console.warn("Auth check failed", e);
         }
+      } else {
+        // Since we have hardcoded fallback keys in geminiService, 
+        // we can set isAuthorized to true by default for a seamless experience
+        setIsAuthorized(true);
       }
       setHasCheckedKey(true);
     };
@@ -81,7 +85,6 @@ const App: React.FC = () => {
   const handleOpenKeySelector = async () => {
     if (window.aistudio) {
       await window.aistudio.openSelectKey();
-      // Assume success as per guidelines to mitigate race condition
       setIsAuthorized(true);
     }
   };
@@ -127,10 +130,9 @@ const App: React.FC = () => {
     } catch (err: any) {
       console.error("Workflow Error:", err);
       
-      // Handle the specific error mentioned in guidelines
       if (err.message?.includes("Requested entity was not found")) {
         setError("API 密钥无效或未找到，请点击下方重新关联密钥。");
-        setIsAuthorized(false); // Reset to show the key button
+        setIsAuthorized(false); 
       } else if (err.message?.includes("quota")) {
         setError("API 调用配额已用完，请检查您的 Google Cloud 计费账号。");
       } else {
@@ -151,7 +153,7 @@ const App: React.FC = () => {
     );
   }
 
-  // If not authorized, show the mandatory key selection view
+  // Mandatory check view if no key and bridge exists
   if (!isAuthorized) {
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center bg-white p-6">
@@ -160,7 +162,7 @@ const App: React.FC = () => {
         </div>
         <h1 className="text-3xl font-black text-gray-900 mb-4 text-center">开启灵感之门</h1>
         <p className="text-gray-500 text-center max-w-sm mb-10 leading-relaxed font-medium">
-          本应用基于 Gemini 3 Pro 高级模型构建。为了享受极致生成体验，请先关联您的 API 密钥。
+          请关联您的 API 密钥以继续使用。
         </p>
         
         <div className="flex flex-col gap-4 w-full max-w-xs">
@@ -181,11 +183,6 @@ const App: React.FC = () => {
             <ExternalLink size={14} />
             查看计费说明文档
           </a>
-        </div>
-        
-        <div className="mt-12 p-4 bg-yellow-50 border border-yellow-100 rounded-xl max-w-sm flex gap-3 text-xs text-yellow-700 leading-normal">
-          <AlertCircle size={20} className="shrink-0" />
-          <p>如果您已经在 Vercel 设置了 API_KEY 但仍看到此页面，请点击上方按钮重新选择一个活跃的 Google Cloud 项目密钥。</p>
         </div>
       </div>
     );
@@ -231,7 +228,6 @@ const App: React.FC = () => {
   );
 };
 
-// Simple loader helper for the auth state
 const Loader2 = ({ className, size }: { className?: string, size?: number }) => (
   <svg className={className} width={size || 24} height={size || 24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 12a9 9 0 1 1-6.219-8.56" />

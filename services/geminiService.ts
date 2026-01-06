@@ -1,10 +1,14 @@
 
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
+
+// User provided free API keys for the proxy service
+const DEFAULT_TEXT_KEY = "sk-Hs7IJK3zeLnYrAHIWbx8jsxknnKkC1AA140ZhktdeF5zzAvq";
+const DEFAULT_IMAGE_KEY = "sk-nBYh0WMJ0EBAxJQzpAtgG0j5G0xB8dEh09PowC5ZESx6qy7G";
+const PROXY_URL = "https://yunwu.ai/v1beta";
 
 /**
  * Generate viral Xiaohongshu post text using Gemini 3 Pro.
- * Adheres strictly to @google/genai guidelines.
  */
 export const generatePostText = async (
   topic: string,
@@ -12,8 +16,13 @@ export const generatePostText = async (
   length: string,
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
-  // Always initialize right before use to ensure latest API_KEY from environment
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // Priority: environment key > provided free key
+  const apiKey = process.env.API_KEY || DEFAULT_TEXT_KEY;
+  const ai = new GoogleGenAI({ 
+    apiKey,
+    // Use the proxy URL provided by the user to bypass regional restrictions
+    baseUrl: PROXY_URL 
+  } as any);
   
   const lengthStrategy = length === 'long' 
     ? "这是一篇深度长文（约800字），需要清晰的逻辑结构、丰富的细节和多级副标题。" 
@@ -68,7 +77,11 @@ export const generatePostImage = async (
   style: string,
   refImageBase64?: string
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = process.env.API_KEY || DEFAULT_IMAGE_KEY;
+  const ai = new GoogleGenAI({ 
+    apiKey,
+    baseUrl: PROXY_URL
+  } as any);
   
   const parts: any[] = [];
   if (refImageBase64) {
@@ -98,7 +111,6 @@ export const generatePostImage = async (
     }
   });
 
-  // Iterate through parts to find the image
   for (const part of response.candidates?.[0]?.content?.parts || []) {
     if (part.inlineData) {
       return `data:image/png;base64,${part.inlineData.data}`;
@@ -113,7 +125,12 @@ export const generatePostImage = async (
  */
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = process.env.API_KEY || DEFAULT_TEXT_KEY;
+  const ai = new GoogleGenAI({ 
+    apiKey,
+    baseUrl: PROXY_URL
+  } as any);
+  
   const response = await ai.models.generateContent({
     model: "gemini-3-pro-preview",
     contents: `针对话题“${topic}”，给出5个更有爆发力、更符合小红书语境的差异化标题方向。以 JSON 数组格式返回。`,
