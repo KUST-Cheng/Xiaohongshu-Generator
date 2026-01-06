@@ -3,15 +3,27 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPost } from "../types";
 
 /**
- * 核心逻辑：直接使用注入的 process.env.API_KEY
- * 按照规范，在每次调用前即时实例化 GoogleGenAI。
+ * 统一的错误识别函数
  */
-const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new Error("API_KEY_NOT_CONFIGURED");
+const handleApiError = (error: any) => {
+  const message = error?.message || "";
+  console.error("Gemini API Error Detail:", error);
+
+  if (message.includes("429") || message.includes("quota")) {
+    throw new Error("QUOTA_EXCEEDED");
   }
-  return new GoogleGenAI({ apiKey });
+  if (message.includes("401") || message.includes("API key not valid")) {
+    throw new Error("AUTH_INVALID");
+  }
+  if (message.includes("403")) {
+    // 403 通常涉及权限、地区限制或未开启计费（Gemini 3 系列模型要求）
+    throw new Error("PERMISSION_DENIED");
+  }
+  if (message.includes("Requested entity was not found")) {
+    throw new Error("AUTH_NEED_RESET");
+  }
+  
+  throw new Error(message || "UNKNOWN_ERROR");
 };
 
 export const generatePostText = async (
@@ -20,32 +32,34 @@ export const generatePostText = async (
   length: string,
   isTemplateMode: boolean
 ): Promise<GeneratedPost> => {
-  const ai = getAiClient();
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const lengthStrategy = length === 'long' 
-    ? "这是一篇深度长文（约800字），需要多级副标题、详细的步骤或见解。" 
-    : (length === 'short' ? "短小精悍，控制在200字以内，重点突出。" : "中等篇幅，400字左右，排版舒适。");
+    ? "这是一篇深度长文（约800字），需要多级副标题、详细的步骤或独到见解。" 
+    : (length === 'short' ? "短小精悍，控制在200字以内，直击痛点。" : "中等篇幅，400字左右，排版精致。");
 
   const prompt = `
-    你是一位拥有千万粉丝的小红书爆款博主，擅长捕捉热点、制造共鸣。
-    话题：${topic}
-    风格：${style}
-    篇幅：${lengthStrategy}
+    你是一位拥有千万粉丝的小红书顶级博主，擅长捕捉社会热点、制造视觉冲突和情感共鸣。
+    请围绕话题“${topic}”创作一篇风格为“${style}”的爆款笔记。
     
-    【创作指南】
-    1. 标题：极具吸引力，包含 2-3 个关键词，使用表情符号。
-    2. 正文：排版优雅，多用 Emoji，语感亲切。
-    3. 标签：生成 5-10 个热点标签。
-    ${isTemplateMode ? '4. 封面文案：针对 iOS 备忘录风格，提取 main_title (主标题), highlight_text (金句), body_preview (简短摘要)。' : ''}
+    【篇幅要求】
+    ${lengthStrategy}
     
-    请严格按照 JSON 格式输出，不要包含任何 Markdown 代码块包裹。
+    【输出规范】
+    1. 标题：极具吸引力，包含关键词和 Emoji，引发点击欲望。
+    2. 正文：使用“呼吸感”排版，段落简短，大量使用小红书热门 Emoji。
+    3. 标签：提供 5-8 个精准的流量标签。
+    ${isTemplateMode ? '4. 备忘录文案：提取 main_title (标题), highlight_text (高亮金句), body_preview (简短摘要)。' : ''}
+    
+    必须以纯 JSON 格式返回。
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3-pro-preview",
       contents: prompt,
       config: {
+        thinkingConfig: { thinkingBudget: 32768 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -69,14 +83,10 @@ export const generatePostText = async (
     });
 
     const text = response.text;
-    if (!text) throw new Error("AI 响应内容为空");
+    if (!text) throw new Error("AI_EMPTY_RESPONSE");
     return JSON.parse(text);
   } catch (error: any) {
-    console.error("Gemini Text Error:", error);
-    if (error.message?.includes("API key not valid") || error.message?.includes("API_KEY_NOT_CONFIGURED")) {
-      throw new Error("AUTH_FAILED");
-    }
-    throw error;
+    return handleApiError(error);
   }
 };
 
@@ -85,13 +95,13 @@ export const generatePostImage = async (
   style: string,
   refImageBase64?: string
 ): Promise<string> => {
-  const ai = getAiClient();
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const styleKeywords: Record<string, string> = {
-    emotional: "cinematic film, soft lighting, healing atmosphere",
-    educational: "clean flatlay, aesthetic workspace, minimalist",
-    promotion: "premium product photography, studio lighting",
-    rant: "realistic street style, high contrast, authentic"
+    emotional: "soft film aesthetic, moody lighting, healing vibes, high-end lifestyle",
+    educational: "minimalist flatlay, clean aesthetic, product photography, bright",
+    promotion: "luxury product close-up, studio lighting, commercial quality",
+    rant: "authentic street photography, high contrast, realistic texture"
   };
 
   const parts: any[] = [];
@@ -99,17 +109,20 @@ export const generatePostImage = async (
     parts.push({
       inlineData: { mimeType: 'image/png', data: refImageBase64 }
     });
-    parts.push({ text: `Based on this reference image's composition and color, generate an aesthetic Xiaohongshu cover for "${topic}". NO TEXT.` });
+    parts.push({ text: `根据这张参考图的构图和色调，为话题“${topic}”生成一张小红书封面大片，画面中不要出现任何文字。` });
   } else {
-    parts.push({ text: `A high-quality aesthetic Xiaohongshu cover photo for: ${topic}. Style: ${styleKeywords[style] || "aesthetic"}. 3:4 aspect ratio, no text.` });
+    parts.push({ text: `A high-quality aesthetic Xiaohongshu cover image for: ${topic}. Style: ${styleKeywords[style] || "aesthetic"}. 3:4 aspect ratio, NO TEXT, ultra-high resolution.` });
   }
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
+      model: 'gemini-3-pro-image-preview',
       contents: { parts },
       config: {
-        imageConfig: { aspectRatio: "3:4" }
+        imageConfig: {
+          aspectRatio: "3:4",
+          imageSize: "1K"
+        }
       }
     });
 
@@ -118,21 +131,27 @@ export const generatePostImage = async (
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    throw new Error("未生成有效图片");
+    throw new Error("IMAGE_DATA_MISSING");
   } catch (error: any) {
-    console.error("Gemini Image Error:", error);
-    // 降级使用公共生成器
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + " aesthetic style")}?width=1080&height=1440&nologo=true`;
+    // 图片生成失败时，先尝试解析特定错误，如果是认证问题则向上抛出，否则返回降级方案
+    try {
+        handleApiError(error);
+    } catch (e: any) {
+        if (["AUTH_INVALID", "AUTH_NEED_RESET", "PERMISSION_DENIED"].includes(e.message)) {
+            throw e;
+        }
+    }
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(topic + " aesthetic")}?width=1080&height=1440&nologo=true`;
   }
 };
 
 export const generateRelatedTopics = async (topic: string): Promise<string[]> => {
   if (!topic) return [];
-  const ai = getAiClient();
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `针对话题“${topic}”，提供5个小红书爆款标题。以 JSON 字符串数组返回。`,
+      model: "gemini-3-pro-preview",
+      contents: `针对话题“${topic}”，提供5个更具爆发力的小红书笔记标题方向。返回 JSON 字符串数组。`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
